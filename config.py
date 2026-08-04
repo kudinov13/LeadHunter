@@ -13,6 +13,12 @@ TG_API_HASH = os.getenv("TG_API_HASH", "")
 TG_PHONE = os.getenv("TG_PHONE", "")
 TG_SESSION_NAME = os.getenv("TG_SESSION_NAME", "work_account")
 
+# === MTProto Proxy (для обхода блокировки Telegram в России) ===
+TG_MTPROTO_ENABLED = os.getenv("TG_MTPROTO_ENABLED", "true").lower() in ("1", "true", "yes")
+TG_MTPROTO_HOST = os.getenv("TG_MTPROTO_HOST", "").strip()
+TG_MTPROTO_PORT = int(os.getenv("TG_MTPROTO_PORT", "0") or "0")
+TG_MTPROTO_SECRET = os.getenv("TG_MTPROTO_SECRET", "").strip()
+
 # === Notification Bot (aiogram) ===
 NOTIF_BOT_TOKEN = os.getenv("NOTIF_BOT_TOKEN", "")
 OWNER_TG_ID = int(os.getenv("OWNER_TG_ID", "0"))

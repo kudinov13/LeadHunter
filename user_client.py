@@ -3,9 +3,10 @@ import json
 import logging
 import asyncio
 from datetime import datetime
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, connection
 from telethon.tl.custom import Message
 from config import (TG_API_ID, TG_API_HASH, TG_PHONE, TG_SESSION_NAME,
+                    TG_MTPROTO_HOST, TG_MTPROTO_PORT, TG_MTPROTO_SECRET,
                     COLD_LEAD_ENABLED)
 import database as db
 from anti_ban import AntiBan
@@ -14,15 +15,30 @@ from lead_detector import detect_lead, detect_cold_lead
 logger = logging.getLogger(__name__)
 
 
+def _build_telegram_client() -> TelegramClient:
+    """Создаёт TelegramClient, при необходимости через MTProto-прокси."""
+    kwargs = {
+        "connection_retries": 5,
+        "retry_delay": 2,
+    }
+    if TG_MTPROTO_HOST and TG_MTPROTO_PORT and TG_MTPROTO_SECRET:
+        logger.info(
+            "Telethon: MTProto proxy %s:%s",
+            TG_MTPROTO_HOST, TG_MTPROTO_PORT,
+        )
+        kwargs["connection"] = connection.ConnectionTcpMTProxyRandomizedIntermediate
+        kwargs["proxy"] = (TG_MTPROTO_HOST, TG_MTPROTO_PORT, TG_MTPROTO_SECRET)
+    else:
+        logger.info("Telethon: прямое подключение (без MTProto proxy)")
+
+    return TelegramClient(TG_SESSION_NAME, TG_API_ID, TG_API_HASH, **kwargs)
+
+
 class UserClient:
     """Управление рабочим аккаунтом через Telethon."""
 
     def __init__(self, notification_callback=None):
-        self.client = TelegramClient(
-            TG_SESSION_NAME, TG_API_ID, TG_API_HASH,
-            connection_retries=5,
-            retry_delay=2,
-        )
+        self.client = _build_telegram_client()
         self.anti_ban = AntiBan()
         self.notification_callback = notification_callback
         self._monitored_chat_ids: set[int] = set()
