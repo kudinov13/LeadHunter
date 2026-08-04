@@ -44,15 +44,16 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 # OmniRoute: "auto/claude-sonnet" (гарантированно Claude Sonnet + fallback),
 # "auto/claude-opus", "auto" (любая модель)
 # Groq: llama-3.3-70b-versatile (качество), llama-3.1-8b-instant (быстро)
-DIALOG_AI_PROVIDER = os.getenv("DIALOG_AI_PROVIDER", "omniroute")
-DIALOG_MODEL = os.getenv("DIALOG_MODEL", "auto/claude-sonnet")
+DIALOG_AI_PROVIDER = "omniroute"
+DIALOG_MODEL = "oc/big-pickle"
 # Модели для классификации (быстрая модель)
-# OmniRoute: "auto" (любая доступная бесплатная модель), "auto/claude-sonnet"
-CLASSIFY_AI_PROVIDER = os.getenv("CLASSIFY_AI_PROVIDER", "omniroute")
-CLASSIFY_MODEL = os.getenv("CLASSIFY_MODEL", "auto")
+# OmniRoute работает, но The Old LLM заблокирован по IP сервера.
+# Используем OpenCode Big Pickle (oc/big-pickle) - бесплатная рабочая модель.
+CLASSIFY_AI_PROVIDER = "omniroute"
+CLASSIFY_MODEL = "oc/big-pickle"
 # Модель для генерации рассылок (по умолчанию как для диалогов)
-BROADCAST_AI_PROVIDER = os.getenv("BROADCAST_AI_PROVIDER", DIALOG_AI_PROVIDER)
-BROADCAST_MODEL = os.getenv("BROADCAST_MODEL", DIALOG_MODEL)
+BROADCAST_AI_PROVIDER = DIALOG_AI_PROVIDER
+BROADCAST_MODEL = DIALOG_MODEL
 
 # === Anti-Ban Settings ===
 ANTI_BAN_MIN_DELAY = int(os.getenv("ANTI_BAN_MIN_DELAY", "30"))
