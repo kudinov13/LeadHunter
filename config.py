@@ -19,6 +19,12 @@ TG_MTPROTO_HOST = os.getenv("TG_MTPROTO_HOST", "").strip()
 TG_MTPROTO_PORT = int(os.getenv("TG_MTPROTO_PORT", "0") or "0")
 TG_MTPROTO_SECRET = os.getenv("TG_MTPROTO_SECRET", "").strip()
 
+# === HTTP/SOCKS Proxy for Bot API (aiogram) ===
+# MTProto прокси не работает с Bot API. Нужен HTTP или SOCKS5 прокси.
+# Примеры: socks5://user:pass@host:1080 или http://host:8080
+# Если пусто - прямое подключение (может не работать в России)
+TG_BOT_PROXY = os.getenv("TG_BOT_PROXY", "").strip()
+
 # === Notification Bot (aiogram) ===
 NOTIF_BOT_TOKEN = os.getenv("NOTIF_BOT_TOKEN", "")
 OWNER_TG_ID = int(os.getenv("OWNER_TG_ID", "0"))

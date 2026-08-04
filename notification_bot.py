@@ -3,11 +3,12 @@ import logging
 import asyncio
 from datetime import datetime
 from aiogram import Bot, Dispatcher, F
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup,
                            InlineKeyboardButton)
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
-from config import NOTIF_BOT_TOKEN, OWNER_TG_ID, COLD_OUTREACH_DAILY_LIMIT
+from config import NOTIF_BOT_TOKEN, OWNER_TG_ID, COLD_OUTREACH_DAILY_LIMIT, TG_BOT_PROXY
 import database as db
 import gis_importer
 import cold_outreach
@@ -19,7 +20,14 @@ class NotificationBot:
     """Бот для уведомлений владельца о найденных лидах и управления диалогами."""
 
     def __init__(self, user_client=None):
-        self.bot = Bot(token=NOTIF_BOT_TOKEN)
+        # Создаем сессию с поддержкой прокси если указан
+        if TG_BOT_PROXY:
+            session = AiohttpSession(proxy=TG_BOT_PROXY)
+            self.bot = Bot(token=NOTIF_BOT_TOKEN, session=session)
+            logger.info(f"Bot API через прокси: {TG_BOT_PROXY}")
+        else:
+            self.bot = Bot(token=NOTIF_BOT_TOKEN)
+            logger.info("Bot API: прямое подключение (без прокси)")
         self.dp = Dispatcher()
         self.user_client = user_client
         self._register_handlers()
