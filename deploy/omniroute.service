@@ -1,0 +1,20 @@
+[Unit]
+Description=OmniRoute AI Gateway for LeadHunter
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/lead-hunter
+Environment=PORT=20128
+Environment=HOST=127.0.0.1
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/omniroute --no-open --port 20128
+Restart=always
+RestartSec=5
+# Bind only locally — do not expose AI gateway publicly
+# OmniRoute listens on PORT; nginx/koosmo untouched
+
+[Install]
+WantedBy=multi-user.target

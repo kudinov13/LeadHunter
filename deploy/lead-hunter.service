@@ -1,0 +1,16 @@
+[Unit]
+Description=LeadHunter Telegram Bot
+After=network.target omniroute.service
+Wants=omniroute.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/lead-hunter
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/lead-hunter/.venv/bin/python main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
