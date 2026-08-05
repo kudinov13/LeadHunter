@@ -436,6 +436,9 @@ class App:
         """Синхронизирует чаты из Telegram с локальной БД."""
         async def do_sync():
             try:
+                if not self.backend.user_client:
+                    logger.warning("User client не инициализирован, пропускаем синхронизацию")
+                    return
                 dialogs = await self.backend.user_client.fetch_dialogs()
                 for d in dialogs:
                     await db.upsert_dialog_chat(d["chat_id"], d["chat_name"])
