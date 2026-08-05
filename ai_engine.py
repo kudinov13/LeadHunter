@@ -8,7 +8,7 @@ import json
 import logging
 from openai import AsyncOpenAI
 from config import (OMNIROUTE_API_KEY, OMNIROUTE_BASE_URL,
-                    GROQ_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY,
+                    GROQ_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY,
                     DIALOG_AI_PROVIDER, DIALOG_MODEL,
                     CLASSIFY_AI_PROVIDER, CLASSIFY_MODEL,
                     BROADCAST_AI_PROVIDER, BROADCAST_MODEL,
@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
 
 # Модели, которые поддерживают response_format json_object
 _JSON_MODELS = {
@@ -91,6 +92,13 @@ def _get_client(provider: str) -> AsyncOpenAI:
             _clients[provider] = AsyncOpenAI(
                 api_key=DEEPSEEK_API_KEY,
                 base_url=DEEPSEEK_BASE_URL
+            )
+        elif provider == "anthropic":
+            if not ANTHROPIC_API_KEY:
+                raise ValueError("ANTHROPIC_API_KEY не настроен. Получите на console.anthropic.com")
+            _clients[provider] = AsyncOpenAI(
+                api_key=ANTHROPIC_API_KEY,
+                base_url=ANTHROPIC_BASE_URL
             )
         else:
             raise ValueError(f"Неизвестный AI провайдер: {provider}")
@@ -235,7 +243,7 @@ async def generate_broadcast(chat_rules: str, recent_messages: list[str],
         content = await _chat_with_fallback(
             BROADCAST_AI_PROVIDER, BROADCAST_MODEL,
             [{"role": "user", "content": prompt}],
-            temperature=0.9, max_tokens=600,
+            temperature=0.9, max_tokens=800,
         )
         if not content:
             return None
@@ -245,13 +253,26 @@ async def generate_broadcast(chat_rules: str, recent_messages: list[str],
         if not isinstance(skip, bool):
             logger.error(f"Неверный формат ответа рассылки (skip не bool): {content[:200]}")
             return None
-        if not skip and not (result.get("message") or "").strip():
+        
+        # Получаем выбранный вариант
+        selected = result.get("selected", "a").lower()
+        variant_key = f"variant_{selected}"
+        message = result.get(variant_key, "").strip()
+        
+        # Если выбранного варианта нет, пробуем другие
+        if not message:
+            for key in ["variant_a", "variant_b", "variant_c"]:
+                if result.get(key, "").strip():
+                    message = result.get(key, "").strip()
+                    break
+        
+        if not skip and not message:
             logger.error(f"Рассылка без текста при skip=false: {content[:200]}")
             return None
 
         result["reason"] = result.get("reason") or ""
-        result["message"] = (result.get("message") or "").strip()
-        logger.info(f"Рассылка сгенерирована: skip={skip}, "
+        result["message"] = message
+        logger.info(f"Рассылка сгенерирована: skip={skip}, selected={selected}, "
                     f"{result['reason'][:60] if skip else result['message'][:60]}")
         return result
     except Exception as e:

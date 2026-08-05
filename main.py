@@ -3,6 +3,7 @@ import asyncio
 import logging
 import sys
 import os
+from aiohttp import web
 
 # Настройка логирования
 logging.basicConfig(
@@ -90,6 +91,43 @@ async def main():
     logger.info("✅ Система запущена! Ожидание лидов...")
     logger.info("Управление через бота уведомлений. Команда: /help")
 
+    # Запуск HTTP API для синхронизации с GUI
+    app = web.Application()
+    
+    async def get_chats(request):
+        """API: получить список чатов."""
+        chats = await db.get_all_chats()
+        return web.json_response({"chats": chats})
+    
+    async def update_chat(request):
+        """API: обновить чат."""
+        data = await request.json()
+        chat_id = data.get("chat_id")
+        if not chat_id:
+            return web.json_response({"error": "chat_id required"}, status=400)
+        
+        await db.update_chat(
+            chat_id=chat_id,
+            chat_name=data.get("chat_name"),
+            is_monitored=data.get("is_monitored", False),
+            is_broadcast=data.get("is_broadcast", False),
+            chat_rules=data.get("chat_rules", ""),
+            broadcast_times=data.get("broadcast_times", ""),
+            message_text=data.get("message_text", ""),
+            message_variants=data.get("message_variants"),
+            schedule_cron=data.get("schedule_cron")
+        )
+        return web.json_response({"success": True})
+    
+    app.router.add_get('/api/chats', get_chats)
+    app.router.add_post('/api/chats', update_chat)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8080)
+    await site.start()
+    logger.info("HTTP API запущен на порту 8080")
+
     try:
         # Держим основной цикл
         await bot_task
@@ -97,6 +135,7 @@ async def main():
         pass
     finally:
         logger.info("Остановка системы...")
+        await runner.cleanup()
         await scheduler.stop()
         await user_client.stop()
         await notif_bot.stop()

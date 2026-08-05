@@ -15,6 +15,7 @@ import sys
 import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
+import aiohttp
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,6 +38,49 @@ from notification_bot import NotificationBot
 from scheduler import MessageScheduler
 
 TIMES_RE = re.compile(r"^\s*([01]?\d|2[0-3]):[0-5]\d(\s*,\s*([01]?\d|2[0-3]):[0-5]\d)*\s*$")
+
+
+class ServerSync:
+    """Синхронизация с сервером через HTTP API."""
+    
+    def __init__(self, server_url: str):
+        self.server_url = server_url
+        self.session = None
+    
+    async def _get_session(self):
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+        return self.session
+    
+    async def fetch_chats(self) -> list[dict] | None:
+        """Получить список чатов с сервера."""
+        if not self.server_url:
+            return None
+        try:
+            session = await self._get_session()
+            async with session.get(f"{self.server_url}/api/chats") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data.get("chats", [])
+        except Exception as e:
+            logger.error(f"Ошибка получения чатов с сервера: {e}")
+        return None
+    
+    async def update_chat(self, chat_data: dict) -> bool:
+        """Обновить чат на сервере."""
+        if not self.server_url:
+            return False
+        try:
+            session = await self._get_session()
+            async with session.post(f"{self.server_url}/api/chats", json=chat_data) as resp:
+                return resp.status == 200
+        except Exception as e:
+            logger.error(f"Ошибка обновления чата на сервере: {e}")
+        return False
+    
+    async def close(self):
+        if self.session and not self.session.closed:
+            await self.session.close()
 
 
 def check_config() -> list[str]:
@@ -154,6 +198,7 @@ class App:
         self.backend = backend
         self.chats: dict[int, dict] = {}
         self.current_chat_id: int | None = None
+        self.server_sync = ServerSync(config.SERVER_URL)
 
         root.title("Lead Hunter — управление чатами")
         root.geometry("1000x600")
@@ -171,6 +216,15 @@ class App:
         # Левая часть: список чатов
         left = ttk.Frame(main)
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Поле поиска
+        search_frame = ttk.Frame(left)
+        search_frame.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(search_frame, text="🔍 Поиск чата:").pack(side=tk.LEFT, padx=(0, 4))
+        self.search_var = tk.StringVar()
+        self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var, width=30)
+        self.search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.search_entry.bind("<KeyRelease>", self._filter_chats)
 
         columns = ("read", "broadcast", "times")
         self.tree = ttk.Treeview(left, columns=columns, show="tree headings",
@@ -209,6 +263,25 @@ class App:
         ttk.Label(right, text="Правила чата (вставьте текст правил вручную):").pack(anchor=tk.W)
         self.rules_text = tk.Text(right, height=10, width=44, wrap=tk.WORD)
         self.rules_text.pack(fill=tk.X, pady=(2, 4))
+        
+        # Контекстное меню для копирования/вставки
+        self.context_menu = tk.Menu(self.root, tearoff=0)
+        self.context_menu.add_command(label="Копировать", command=self._copy_text)
+        self.context_menu.add_command(label="Вставить", command=self._paste_text)
+        self.context_menu.add_command(label="Вырезать", command=self._cut_text)
+        self.context_menu.add_separator()
+        self.context_menu.add_command(label="Очистить", command=self._clear_text)
+        
+        self.rules_text.bind("<Button-3>", self._show_context_menu)  # Правая кнопка мыши
+        self.rules_text.bind("<Button-2>", self._show_context_menu)  # Для macOS
+        
+        # Горячие клавиши
+        self.root.bind("<Control-v>", lambda e: self._paste_text())
+        self.root.bind("<Control-c>", lambda e: self._copy_text())
+        self.root.bind("<Control-x>", lambda e: self._cut_text())
+        self.rules_text.bind("<Control-v>", lambda e: self._paste_text())
+        self.rules_text.bind("<Control-c>", lambda e: self._copy_text())
+        self.rules_text.bind("<Control-x>", lambda e: self._cut_text())
 
         self.no_rules_var = tk.BooleanVar()
         ttk.Checkbutton(right, text="Правил нет (я проверил — в чате нет правил)",
@@ -250,6 +323,70 @@ class App:
             self.rules_text.configure(state=tk.DISABLED, bg="#f0f0f0")
         else:
             self.rules_text.configure(state=tk.NORMAL, bg="white")
+
+    def _show_context_menu(self, event):
+        """Показывает контекстное меню при правом клике."""
+        self.context_menu.post(event.x_root, event.y_root)
+
+    def _copy_text(self):
+        """Копирует выделенный текст."""
+        try:
+            selected = self.rules_text.get("sel.first", "sel.last")
+            self.root.clipboard_clear()
+            self.root.clipboard_append(selected)
+        except:
+            pass  # Ничего не выделено
+
+    def _paste_text(self):
+        """Вставляет текст из буфера обмена."""
+        try:
+            text = self.root.clipboard_get()
+            self.rules_text.insert(tk.INSERT, text)
+        except:
+            pass  # Буфер пуст или недоступен
+
+    def _cut_text(self):
+        """Вырезает выделенный текст."""
+        try:
+            selected = self.rules_text.get("sel.first", "sel.last")
+            self.root.clipboard_clear()
+            self.root.clipboard_append(selected)
+            self.rules_text.delete("sel.first", "sel.last")
+        except:
+            pass  # Ничего не выделено
+
+    def _clear_text(self):
+        """Очищает поле."""
+        self.rules_text.delete("1.0", tk.END)
+
+    def _filter_chats(self, _event=None):
+        """Фильтрует список чатов по строке поиска."""
+        search_text = self.search_var.get().lower()
+        selected = self.current_chat_id
+        
+        # Сохраняем все чаты
+        if not hasattr(self, '_all_chats'):
+            self._all_chats = list(self.chats.values())
+        
+        # Фильтруем
+        filtered_chats = self._all_chats
+        if search_text:
+            filtered_chats = [c for c in self._all_chats 
+                            if search_text in c["chat_name"].lower()]
+        
+        # Обновляем дерево
+        self.tree.delete(*self.tree.get_children())
+        for c in filtered_chats:
+            read_mark = "✓" if c.get("is_monitored") else "–"
+            bcast_mark = "✓" if c.get("is_broadcast") else "–"
+            times = c.get("broadcast_times") or ""
+            self.tree.insert("", tk.END, iid=str(c["chat_id"]),
+                            text=c["chat_name"],
+                            values=(read_mark, bcast_mark, times))
+        
+        # Восстанавливаем выделение если возможно
+        if selected and str(selected) in self.tree.get_children():
+            self.tree.selection_set(str(selected))
 
     # === Взаимодействие с бэкендом ===
 
@@ -297,6 +434,7 @@ class App:
     def reload_chat_list(self):
         def done(chats):
             self.chats = {c["chat_id"]: c for c in chats}
+            self._all_chats = list(chats)  # Сохраняем для фильтрации
             selected = self.current_chat_id
             self.tree.delete(*self.tree.get_children())
             for c in chats:
@@ -308,8 +446,15 @@ class App:
                                  values=(read_mark, bcast_mark, times))
             if selected and str(selected) in self.tree.get_children():
                 self.tree.selection_set(str(selected))
+            # Применяем фильтр если есть текст поиска
+            if self.search_var.get():
+                self._filter_chats()
 
-        self.run_async(db.get_all_chats(), on_done=done)
+        # Если настроен SERVER_URL, загружаем с сервера, иначе из локальной БД
+        if config.SERVER_URL:
+            self.run_async(self.server_sync.fetch_chats(), on_done=done)
+        else:
+            self.run_async(db.get_all_chats(), on_done=done)
 
     def _on_select(self, _event):
         sel = self.tree.selection()
@@ -373,6 +518,7 @@ class App:
                 return
 
         async def do_save():
+            # Сохраняем в локальную БД
             await db.update_chat_flags(
                 chat_id,
                 int(self.read_var.get()),
@@ -382,6 +528,18 @@ class App:
             )
             await self.backend.user_client.reload_chats()
             await self.backend.scheduler.reload_jobs()
+            
+            # Синхронизируем с сервером если настроен SERVER_URL
+            if config.SERVER_URL:
+                chat_data = {
+                    "chat_id": chat_id,
+                    "chat_name": self.chats[chat_id].get("chat_name"),
+                    "is_monitored": self.read_var.get(),
+                    "is_broadcast": self.bcast_var.get(),
+                    "chat_rules": rules,
+                    "broadcast_times": times or None,
+                }
+                await self.server_sync.update_chat(chat_data)
 
         def done(_):
             self.status_var.set(f"💾 Сохранено: {self.chats[chat_id]['chat_name']}")

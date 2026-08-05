@@ -215,6 +215,48 @@ async def update_chat_flags(chat_id: int, is_monitored: int, is_broadcast: int,
         await db.commit()
 
 
+async def update_chat(chat_id: int, chat_name: str = None, is_monitored: bool = None,
+                      is_broadcast: bool = None, chat_rules: str = None,
+                      broadcast_times: str = None, message_text: str = None,
+                      message_variants: list[str] = None, schedule_cron: str = None):
+    """Полное обновление чата (для API синхронизации с GUI)."""
+    import json
+    async with aiosqlite.connect(DB_PATH) as db:
+        updates = []
+        params = []
+        
+        if chat_name is not None:
+            updates.append("chat_name = ?")
+            params.append(chat_name)
+        if is_monitored is not None:
+            updates.append("is_monitored = ?")
+            params.append(1 if is_monitored else 0)
+        if is_broadcast is not None:
+            updates.append("is_broadcast = ?")
+            params.append(1 if is_broadcast else 0)
+        if chat_rules is not None:
+            updates.append("chat_rules = ?")
+            params.append(chat_rules)
+        if broadcast_times is not None:
+            updates.append("broadcast_times = ?")
+            params.append(broadcast_times)
+        if message_text is not None:
+            updates.append("message_text = ?")
+            params.append(message_text)
+        if message_variants is not None:
+            updates.append("message_variants = ?")
+            params.append(json.dumps(message_variants, ensure_ascii=False))
+        if schedule_cron is not None:
+            updates.append("schedule_cron = ?")
+            params.append(schedule_cron)
+        
+        if updates:
+            params.append(chat_id)
+            query = f"UPDATE chats SET {', '.join(updates)} WHERE chat_id = ?"
+            await db.execute(query, params)
+            await db.commit()
+
+
 async def get_broadcast_chats() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
