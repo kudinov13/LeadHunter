@@ -9,6 +9,15 @@ HOST = "82.202.170.14"
 USER = "root"
 PASSWORD = "vbif88vbif"
 
+def local_env_value(key):
+    env_path = Path(__file__).parent / ".env"
+    if not env_path.exists():
+        return ""
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1].strip()
+    return ""
+
 def run(ssh, cmd, timeout=120):
     print(f"\n$ {cmd[:150]}")
     stdin, stdout, stderr = ssh.exec_command(cmd, timeout=timeout, get_pty=True)
@@ -35,6 +44,17 @@ def main():
 
     print("\n=== 3. Переустанавливаем зависимости ===")
     run(ssh, "cd /opt/lead-hunter && .venv/bin/pip install -q -r requirements.txt")
+
+    print("\n=== 3.1. Добавляем API_TOKEN в .env на сервере (если нет) ===")
+    token = local_env_value("API_TOKEN")
+    if token:
+        run(ssh, f"cd /opt/lead-hunter && grep -q '^API_TOKEN=' .env && sed -i 's/^API_TOKEN=.*/API_TOKEN={token}/' .env || echo 'API_TOKEN={token}' >> .env")
+        run(ssh, "grep '^API_TOKEN=' /opt/lead-hunter/.env")
+    else:
+        print("WARNING: API_TOKEN не найден в локальном .env")
+
+    print("\n=== 3.2. Открываем порт 8080 для GUI ===")
+    run(ssh, "ufw allow 8080/tcp || true")
 
     print("\n=== 4. Проверяем обновлённый user_client.py ===")
     run(ssh, "head -n 35 /opt/lead-hunter/user_client.py")
