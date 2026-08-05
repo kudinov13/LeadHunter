@@ -368,6 +368,73 @@ class UserClient:
             return True
         return False
 
+    async def start_dialog_with_cold_lead(self, lead_id: int) -> bool:
+        """Начало диалога с холодным лидом: AI пишет первое сообщение по боли/зацепке."""
+        import ai_engine
+
+        lead = await db.get_cold_lead(lead_id)
+        if not lead:
+            logger.error(f"Холодный лид #{lead_id} не найден")
+            return False
+
+        if await db.has_seen_user(lead["sender_id"]):
+            logger.warning(f"Уже писали пользователю {lead['sender_id']}")
+            return False
+
+        if not await self.anti_ban.can_send():
+            logger.warning("Невозможно начать холодный диалог: анти-бан лимиты")
+            return False
+
+        dialog_id = await db.create_dialog(
+            lead_id=lead_id,
+            sender_id=lead["sender_id"],
+            sender_name=lead["sender_name"],
+            sender_username=lead.get("sender_username"),
+        )
+
+        context = (
+            f"Вы увидели сообщение в чате \"{lead['chat_name']}\":\n"
+            f"\"{lead['message_text']}\"\n\n"
+            f"Это ХОЛОДНЫЙ лид: человек не искал разработчика напрямую, "
+            f"но у него есть потребность.\n"
+        )
+        if lead.get("business_type"):
+            context += f"Тип бизнеса: {lead['business_type']}\n"
+        if lead.get("pain"):
+            context += f"Его боль/потребность: {lead['pain']}\n"
+        if lead.get("hook"):
+            context += f"Рекомендуемый подход: {lead['hook']}\n"
+        context += (
+            "\nНапишите первое сообщение этому человеку. Будьте деликатны: "
+            "он не просил помощи. Кратко представьтесь, мягко зацепитесь за его "
+            "сообщение и предложите обсудить, чем можете быть полезны. "
+            "Не более 2-3 предложений, без навязчивости."
+        )
+
+        messages = [{"role": "user", "content": context}]
+        result = await ai_engine.generate_dialogue_response(
+            messages_history=messages,
+            stage="INITIATING",
+        )
+
+        if result is None:
+            logger.error("Ошибка генерации первого сообщения холодному лиду")
+            return False
+
+        first_message, new_stage = result
+        messages.append({"role": "assistant", "content": first_message})
+
+        await db.update_dialog_messages(dialog_id, json.dumps(messages, ensure_ascii=False))
+        await db.update_dialog_stage(dialog_id, new_stage)
+
+        success = await self._send_message(lead["sender_id"], first_message)
+        if success:
+            await db.mark_user_seen(lead["sender_id"])
+            await db.update_cold_lead_status(lead_id, "DIALOG_STARTED")
+            logger.info(f"Холодный диалог #{dialog_id} начат с лидом #{lead_id}")
+            return True
+        return False
+
     async def continue_dialog_with_price(self, dialog_id: int, price: str):
         """Продолжение диалога с указанной ценой (команда от владельца)."""
         import ai_engine

@@ -241,10 +241,15 @@ class NotificationBot:
             lead_id = int(callback.data.split("_")[2])
             await callback.answer("Начинаю холодный диалог...")
             if self.user_client:
-                # TODO: implement start_dialog_with_cold_lead in user_client
-                await callback.message.edit_text(
-                    callback.message.text + "\n\n✅ AI начал диалог с холодным лидом"
-                )
+                success = await self.user_client.start_dialog_with_cold_lead(lead_id)
+                if success:
+                    await callback.message.edit_text(
+                        callback.message.text + "\n\n✅ AI начал диалог с холодным лидом"
+                    )
+                else:
+                    await callback.message.edit_text(
+                        callback.message.text + "\n\n❌ Не удалось начать диалог (лимиты, уже писали или ошибка)"
+                    )
             else:
                 await callback.message.answer("❌ Клиент не инициализирован")
 

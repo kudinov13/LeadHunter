@@ -14,9 +14,21 @@ from config import (OMNIROUTE_API_KEY, OMNIROUTE_BASE_URL,
                     BROADCAST_AI_PROVIDER, BROADCAST_MODEL,
                     CLASSIFY_SYSTEM_PROMPT, DIALOG_SYSTEM_PROMPT,
                     BROADCAST_PROMPT, NO_RULES_MARKER,
-                    DEVELOPER_INFO)
+                    DEVELOPER_INFO, DEVELOPER_GENDER)
 
 logger = logging.getLogger(__name__)
+
+_GENDER_RU = {"male": "мужской", "female": "женский"}
+
+
+async def _get_gender_ru() -> str:
+    """Пол разработчика: из настроек БД (меняется через GUI), иначе из .env."""
+    try:
+        import database as db
+        value = await db.get_setting("developer_gender")
+    except Exception:
+        value = None
+    return _GENDER_RU.get(value or DEVELOPER_GENDER, "мужской")
 
 # Base URLs для OpenAI-совместимых провайдеров
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
@@ -174,7 +186,8 @@ async def generate_dialogue_response(
     try:
         client = _get_client(DIALOG_AI_PROVIDER)
 
-        system_content = f"{DIALOG_SYSTEM_PROMPT}\n\n{DEVELOPER_INFO}\n\n"
+        gender_ru = await _get_gender_ru()
+        system_content = f"{DIALOG_SYSTEM_PROMPT.format(gender=gender_ru)}\n\n{DEVELOPER_INFO}\n\n"
         system_content += f"Текущая стадия диалога: {stage}\n"
         if price:
             system_content += f"\nМенеджер установил цену: {price}. "
@@ -233,6 +246,7 @@ async def generate_broadcast(chat_rules: str, recent_messages: list[str],
         recent_text = "\n---\n".join(recent_messages) if recent_messages else "(ещё не было отправок)"
 
         prompt = BROADCAST_PROMPT.format(
+            gender=await _get_gender_ru(),
             developer_info=DEVELOPER_INFO,
             chat_rules=rules_text,
             recent_messages=recent_text,

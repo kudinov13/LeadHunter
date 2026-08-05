@@ -1,211 +1,108 @@
-"""Десктоп-интерфейс управления чатами: что читать, куда делать AI-рассылку.
+"""Десктоп-интерфейс управления чатами (тонкий клиент).
 
-Запуск: python main_gui.py
-Внутри работает весь стек (Telethon + бот уведомлений + планировщик),
-поэтому НЕЛЬЗЯ одновременно запускать python main.py — конфликт сессии и polling.
+Вся работа (Telethon, бот уведомлений, планировщик, AI) идёт на СЕРВЕРЕ.
+Эта программа только управляет настройками через HTTP API сервера,
+поэтому все изменения сохраняются на сервере и не слетают при перезапуске.
 
-Первую авторизацию Telegram (ввод кода) делайте из консоли:
-код запрашивается прямо в окне терминала, из которого запущена программа.
+Настройка: в .env рядом с exe укажите
+    SERVER_URL=http://82.202.170.14:8080
+    API_TOKEN=<токен с сервера>
+
+Запуск: python main_gui.py  или  LeadHunter.exe
 """
-import asyncio
+import json
 import logging
 import os
 import re
 import sys
 import threading
+import urllib.request
+import urllib.error
 import tkinter as tk
 from tkinter import ttk, messagebox
-import aiohttp
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot.log", encoding="utf-8"),
+        logging.FileHandler("gui.log", encoding="utf-8"),
     ],
 )
 logger = logging.getLogger("main_gui")
 
-os.makedirs("data", exist_ok=True)
-os.makedirs("logs", exist_ok=True)
+# .env лежит рядом с exe (или со скриптом)
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-import config
-from config import NO_RULES_MARKER, OWNER_TG_ID
-import database as db
-from user_client import UserClient
-from notification_bot import NotificationBot
-from scheduler import MessageScheduler
+from dotenv import load_dotenv
+load_dotenv(os.path.join(BASE_DIR, ".env"))
+
+SERVER_URL = os.getenv("SERVER_URL", "").rstrip("/")
+API_TOKEN = os.getenv("API_TOKEN", "")
+NO_RULES_MARKER = "NO_RULES"
 
 TIMES_RE = re.compile(r"^\s*([01]?\d|2[0-3]):[0-5]\d(\s*,\s*([01]?\d|2[0-3]):[0-5]\d)*\s*$")
 
 
-class ServerSync:
-    """Синхронизация с сервером через HTTP API."""
-    
-    def __init__(self, server_url: str):
-        self.server_url = server_url
-        self.session = None
-    
-    async def _get_session(self):
-        if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession()
-        return self.session
-    
-    async def fetch_chats(self) -> list[dict] | None:
-        """Получить список чатов с сервера."""
-        if not self.server_url:
-            return None
-        try:
-            session = await self._get_session()
-            async with session.get(f"{self.server_url}/api/chats") as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data.get("chats", [])
-        except Exception as e:
-            logger.error(f"Ошибка получения чатов с сервера: {e}")
-        return None
-    
-    async def update_chat(self, chat_data: dict) -> bool:
-        """Обновить чат на сервере."""
-        if not self.server_url:
-            return False
-        try:
-            session = await self._get_session()
-            async with session.post(f"{self.server_url}/api/chats", json=chat_data) as resp:
-                return resp.status == 200
-        except Exception as e:
-            logger.error(f"Ошибка обновления чата на сервере: {e}")
-        return False
-    
-    async def close(self):
-        if self.session and not self.session.closed:
-            await self.session.close()
+class ServerAPI:
+    """HTTP-клиент к API сервера (urllib, без внешних зависимостей)."""
 
+    def __init__(self, base_url: str, token: str):
+        self.base_url = base_url
+        self.token = token
 
-def check_config() -> list[str]:
-    errors = []
-    if not config.TG_API_ID or not config.TG_API_HASH:
-        errors.append("TG_API_ID и TG_API_HASH не настроены")
-    if not config.NOTIF_BOT_TOKEN:
-        errors.append("NOTIF_BOT_TOKEN не настроен")
-    if not config.OWNER_TG_ID:
-        errors.append("OWNER_TG_ID не настроен")
-    return errors
+    def _request(self, method: str, path: str, payload: dict | None = None,
+                 timeout: int = 90) -> dict:
+        url = f"{self.base_url}{path}"
+        data = None
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["X-API-Token"] = self.token
+        if payload is not None:
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
 
+    def get_chats(self) -> list[dict]:
+        return self._request("GET", "/api/chats")["chats"]
 
-class Backend:
-    """Фоновый поток с asyncio: Telethon + бот + планировщик."""
+    def update_chat(self, chat_data: dict) -> bool:
+        return self._request("POST", "/api/chats", chat_data).get("success", False)
 
-    def __init__(self):
-        self.loop: asyncio.AbstractEventLoop | None = None
-        self.user_client: UserClient | None = None
-        self.notif_bot: NotificationBot | None = None
-        self.scheduler: MessageScheduler | None = None
-        self.started = threading.Event()
-        self.error: Exception | None = None
-        self._bot_task = None
-        self.thread = threading.Thread(target=self._run, daemon=True, name="backend")
+    def sync_dialogs(self) -> int:
+        return self._request("POST", "/api/sync_dialogs", {}, timeout=180).get("count", 0)
 
-    def start(self):
-        self.thread.start()
+    def preview_broadcast(self, chat_id: int) -> dict | None:
+        return self._request("POST", "/api/preview_broadcast",
+                             {"chat_id": chat_id}, timeout=180).get("result")
 
-    def _run(self):
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
-        try:
-            self.loop.run_until_complete(self._startup())
-        except Exception as e:
-            logger.error(f"Ошибка запуска бэкенда: {e}", exc_info=True)
-            self.error = e
-            self.started.set()
-            return
-        self.started.set()
-        try:
-            self.loop.run_forever()
-        finally:
-            try:
-                self.loop.run_until_complete(self.loop.shutdown_asyncgens())
-            except Exception:
-                pass
-            self.loop.close()
-            logger.info("Цикл бэкенда завершён")
+    def get_settings(self) -> dict:
+        return self._request("GET", "/api/settings")
 
-    async def _startup(self):
-        await db.init_db()
+    def set_settings(self, settings: dict) -> bool:
+        return self._request("POST", "/api/settings", settings).get("success", False)
 
-        self.notif_bot = NotificationBot()
-
-        async def notification_router(**kwargs):
-            category = kwargs.get("category", "")
-            if category in ("HOT_COLD", "WARM_COLD"):
-                await self.notif_bot.notify_cold_lead(**kwargs)
-            else:
-                await self.notif_bot.notify_lead(**kwargs)
-
-        self.user_client = UserClient(notification_callback=notification_router)
-        self.notif_bot.user_client = self.user_client
-
-        async def broadcast_notify(text: str):
-            await self.notif_bot.bot.send_message(OWNER_TG_ID, text)
-
-        self.scheduler = MessageScheduler(
-            user_client=self.user_client,
-            broadcast_notify_callback=broadcast_notify,
-        )
-
-        await self.user_client.start()
-        await self.scheduler.start()
-        self._bot_task = asyncio.ensure_future(self.notif_bot.start())
-        logger.info("Бэкенд запущен")
-
-    async def _shutdown(self):
-        logger.info("Остановка бэкенда...")
-        try:
-            if self.scheduler:
-                await self.scheduler.stop()
-        except Exception as e:
-            logger.error(f"Ошибка остановки планировщика: {e}")
-        try:
-            if self.user_client:
-                await self.user_client.stop()
-        except Exception as e:
-            logger.error(f"Ошибка остановки Telethon: {e}")
-        try:
-            if self._bot_task:
-                self._bot_task.cancel()
-            if self.notif_bot:
-                await self.notif_bot.stop()
-        except Exception as e:
-            logger.error(f"Ошибка остановки бота: {e}")
-
-    def shutdown(self, timeout: float = 15.0):
-        """Синхронная остановка из GUI-потока."""
-        if not self.loop or not self.loop.is_running():
-            return
-        fut = asyncio.run_coroutine_threadsafe(self._shutdown(), self.loop)
-        try:
-            fut.result(timeout=timeout)
-        except Exception as e:
-            logger.error(f"Остановка бэкенда не завершилась чисто: {e}")
-        self.loop.call_soon_threadsafe(self.loop.stop)
-        self.thread.join(timeout=5)
+    def get_status(self) -> dict:
+        return self._request("GET", "/api/status", timeout=15)
 
 
 class App:
-    def __init__(self, root: tk.Tk, backend: Backend):
+    def __init__(self, root: tk.Tk, api: ServerAPI):
         self.root = root
-        self.backend = backend
+        self.api = api
         self.chats: dict[int, dict] = {}
         self.current_chat_id: int | None = None
-        self.server_sync = ServerSync(config.SERVER_URL)
+        self._all_chats: list[dict] = []
 
-        root.title("Lead Hunter — управление чатами")
-        root.geometry("1000x600")
-        root.protocol("WM_DELETE_WINDOW", self.on_close)
+        root.title("Lead Hunter — управление чатами (сервер)")
+        root.geometry("1000x620")
 
         self._build_ui()
-        self._wait_backend()
+        self._connect_to_server()
 
     # === UI ===
 
@@ -217,7 +114,6 @@ class App:
         left = ttk.Frame(main)
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Поле поиска
         search_frame = ttk.Frame(left)
         search_frame.pack(fill=tk.X, pady=(0, 4))
         ttk.Label(search_frame, text="🔍 Поиск чата:").pack(side=tk.LEFT, padx=(0, 4))
@@ -258,12 +154,22 @@ class App:
         ttk.Checkbutton(right, text="Читать (поиск лидов в этом чате)",
                         variable=self.read_var).pack(anchor=tk.W)
         ttk.Checkbutton(right, text="Рассылка (AI пишет рекламу в этот чат)",
-                        variable=self.bcast_var).pack(anchor=tk.W, pady=(2, 8))
+                        variable=self.bcast_var).pack(anchor=tk.W, pady=(2, 4))
+
+        # Пол разработчика — общая настройка, хранится на сервере
+        self.gender_var = tk.StringVar(value="male")
+        gender_frame = ttk.Frame(right)
+        gender_frame.pack(anchor=tk.W, pady=(0, 8))
+        ttk.Label(gender_frame, text="Пол разработчика:").pack(side=tk.LEFT)
+        ttk.Radiobutton(gender_frame, text="Мужской", variable=self.gender_var,
+                        value="male", command=self.save_gender).pack(side=tk.LEFT, padx=(8, 4))
+        ttk.Radiobutton(gender_frame, text="Женский", variable=self.gender_var,
+                        value="female", command=self.save_gender).pack(side=tk.LEFT)
 
         ttk.Label(right, text="Правила чата (вставьте текст правил вручную):").pack(anchor=tk.W)
         self.rules_text = tk.Text(right, height=10, width=44, wrap=tk.WORD)
         self.rules_text.pack(fill=tk.X, pady=(2, 4))
-        
+
         # Контекстное меню для копирования/вставки
         self.context_menu = tk.Menu(self.root, tearoff=0)
         self.context_menu.add_command(label="Копировать", command=self._copy_text)
@@ -271,17 +177,9 @@ class App:
         self.context_menu.add_command(label="Вырезать", command=self._cut_text)
         self.context_menu.add_separator()
         self.context_menu.add_command(label="Очистить", command=self._clear_text)
-        
-        self.rules_text.bind("<Button-3>", self._show_context_menu)  # Правая кнопка мыши
-        self.rules_text.bind("<Button-2>", self._show_context_menu)  # Для macOS
-        
-        # Горячие клавиши
-        self.root.bind("<Control-v>", lambda e: self._paste_text())
-        self.root.bind("<Control-c>", lambda e: self._copy_text())
-        self.root.bind("<Control-x>", lambda e: self._cut_text())
-        self.rules_text.bind("<Control-v>", lambda e: self._paste_text())
-        self.rules_text.bind("<Control-c>", lambda e: self._copy_text())
-        self.rules_text.bind("<Control-x>", lambda e: self._cut_text())
+
+        self.rules_text.bind("<Button-3>", self._show_context_menu)
+        self.rules_text.bind("<Button-2>", self._show_context_menu)
 
         self.no_rules_var = tk.BooleanVar()
         ttk.Checkbutton(right, text="Правил нет (я проверил — в чате нет правил)",
@@ -305,8 +203,12 @@ class App:
                                    command=self.sync_dialogs)
         self.sync_btn.pack(anchor=tk.W, pady=(16, 0))
 
+        self.reload_btn = ttk.Button(right, text="⟳ Перечитать данные с сервера",
+                                     command=self.reload_chat_list)
+        self.reload_btn.pack(anchor=tk.W, pady=(6, 0))
+
         # Статус-бар
-        self.status_var = tk.StringVar(value="Запуск бэкенда (Telethon + бот)...")
+        self.status_var = tk.StringVar(value=f"Подключение к серверу {SERVER_URL}...")
         status = ttk.Label(self.root, textvariable=self.status_var,
                            relief=tk.SUNKEN, anchor=tk.W, padding=(6, 2))
         status.pack(side=tk.BOTTOM, fill=tk.X)
@@ -315,7 +217,7 @@ class App:
 
     def _set_controls_enabled(self, enabled: bool):
         state = "normal" if enabled else "disabled"
-        for btn in (self.save_btn, self.test_btn, self.sync_btn):
+        for btn in (self.save_btn, self.test_btn, self.sync_btn, self.reload_btn):
             btn.configure(state=state)
 
     def _toggle_no_rules(self):
@@ -325,158 +227,138 @@ class App:
             self.rules_text.configure(state=tk.NORMAL, bg="white")
 
     def _show_context_menu(self, event):
-        """Показывает контекстное меню при правом клике."""
         self.context_menu.post(event.x_root, event.y_root)
 
     def _copy_text(self):
-        """Копирует выделенный текст."""
         try:
             selected = self.rules_text.get("sel.first", "sel.last")
             self.root.clipboard_clear()
             self.root.clipboard_append(selected)
-        except:
-            pass  # Ничего не выделено
+        except tk.TclError:
+            pass
 
     def _paste_text(self):
-        """Вставляет текст из буфера обмена."""
         try:
             text = self.root.clipboard_get()
             self.rules_text.insert(tk.INSERT, text)
-        except:
-            pass  # Буфер пуст или недоступен
+        except tk.TclError:
+            pass
 
     def _cut_text(self):
-        """Вырезает выделенный текст."""
         try:
             selected = self.rules_text.get("sel.first", "sel.last")
             self.root.clipboard_clear()
             self.root.clipboard_append(selected)
             self.rules_text.delete("sel.first", "sel.last")
-        except:
-            pass  # Ничего не выделено
+        except tk.TclError:
+            pass
 
     def _clear_text(self):
-        """Очищает поле."""
         self.rules_text.delete("1.0", tk.END)
 
     def _filter_chats(self, _event=None):
-        """Фильтрует список чатов по строке поиска."""
         search_text = self.search_var.get().lower()
-        selected = self.current_chat_id
-        
-        # Сохраняем все чаты
-        if not hasattr(self, '_all_chats'):
-            self._all_chats = list(self.chats.values())
-        
-        # Фильтруем
-        filtered_chats = self._all_chats
+        filtered = self._all_chats
         if search_text:
-            filtered_chats = [c for c in self._all_chats 
-                            if search_text in c["chat_name"].lower()]
-        
-        # Обновляем дерево
+            filtered = [c for c in self._all_chats
+                        if search_text in (c.get("chat_name") or "").lower()]
+        self._fill_tree(filtered)
+
+    def _fill_tree(self, chats: list[dict]):
+        selected = self.current_chat_id
         self.tree.delete(*self.tree.get_children())
-        for c in filtered_chats:
+        for c in chats:
             read_mark = "✓" if c.get("is_monitored") else "–"
             bcast_mark = "✓" if c.get("is_broadcast") else "–"
             times = c.get("broadcast_times") or ""
             self.tree.insert("", tk.END, iid=str(c["chat_id"]),
-                            text=c["chat_name"],
-                            values=(read_mark, bcast_mark, times))
-        
-        # Восстанавливаем выделение если возможно
+                             text=c.get("chat_name") or str(c["chat_id"]),
+                             values=(read_mark, bcast_mark, times))
         if selected and str(selected) in self.tree.get_children():
             self.tree.selection_set(str(selected))
 
-    # === Взаимодействие с бэкендом ===
+    # === Работа с сервером (фоновые потоки, GUI не блокируется) ===
 
-    def run_async(self, coro, on_done=None, on_error=None):
-        """Запускает корутину в фоновом цикле, результат — в GUI-поток."""
-        fut = asyncio.run_coroutine_threadsafe(coro, self.backend.loop)
-
-        def poll():
-            if not fut.done():
-                self.root.after(150, poll)
-                return
+    def run_bg(self, func, on_done=None, on_error=None):
+        """Выполняет func() в фоне, результат возвращает в GUI-поток."""
+        def worker():
             try:
-                result = fut.result()
+                result = func()
+            except urllib.error.HTTPError as e:
+                if e.code == 401:
+                    err = Exception("Сервер отклонил доступ (401): проверьте API_TOKEN в .env")
+                else:
+                    err = Exception(f"Ошибка сервера: HTTP {e.code}")
+                logger.error(f"HTTP ошибка: {e}")
+                self.root.after(0, lambda: (on_error or self._default_error)(err))
+                return
+            except urllib.error.URLError as e:
+                err = Exception(f"Нет связи с сервером {SERVER_URL}:\n{e.reason}")
+                logger.error(f"Сервер недоступен: {e}")
+                self.root.after(0, lambda: (on_error or self._default_error)(err))
+                return
             except Exception as e:
                 logger.error(f"Ошибка фоновой операции: {e}", exc_info=True)
-                if on_error:
-                    on_error(e)
-                else:
-                    messagebox.showerror("Ошибка", str(e))
+                self.root.after(0, lambda: (on_error or self._default_error)(e))
                 return
             if on_done:
-                on_done(result)
+                self.root.after(0, lambda: on_done(result))
 
-        poll()
+        threading.Thread(target=worker, daemon=True).start()
 
-    def _wait_backend(self):
-        if not self.backend.started.is_set():
-            self.root.after(300, self._wait_backend)
-            return
-        if self.backend.error:
-            self.status_var.set(f"❌ Ошибка запуска: {self.backend.error}")
-            messagebox.showerror(
-                "Ошибка запуска",
-                f"Бэкенд не запустился:\n{self.backend.error}\n\n"
-                f"Проверьте .env и подключение к интернету.\n"
-                f"Если требуется авторизация Telegram — запустите из консоли."
+    def _default_error(self, e: Exception):
+        self.status_var.set("❌ Ошибка связи с сервером")
+        messagebox.showerror("Ошибка", str(e))
+
+    def _connect_to_server(self):
+        """Первое подключение: статус + настройки + список чатов."""
+        def load():
+            status = self.api.get_status()
+            settings = self.api.get_settings()
+            chats = self.api.get_chats()
+            return status, settings, chats
+
+        def done(result):
+            status, settings, chats = result
+            self.gender_var.set(settings.get("developer_gender", "male"))
+            self._apply_chats(chats)
+            self._set_controls_enabled(True)
+            running = "✅ работает" if status.get("running") else "⚠️ Telegram-клиент остановлен"
+            self.status_var.set(
+                f"Сервер {SERVER_URL}: {running} | чатов отслеживается: "
+                f"{status.get('monitored_chats', 0)} | действий сегодня: "
+                f"{status.get('daily_actions', 0)}"
             )
-            return
-        self.status_var.set("✅ Работает: мониторинг чатов и рассылки активны")
-        self._set_controls_enabled(True)
-        
-        # Синхронизируем чаты из Telegram при первом запуске
-        self._sync_chats_from_telegram()
-        self.reload_chat_list()
-    
-    def _sync_chats_from_telegram(self):
-        """Синхронизирует чаты из Telegram с локальной БД."""
-        async def do_sync():
-            try:
-                if not self.backend.user_client:
-                    logger.warning("User client не инициализирован, пропускаем синхронизацию")
-                    return
-                dialogs = await self.backend.user_client.fetch_dialogs()
-                for d in dialogs:
-                    await db.upsert_dialog_chat(d["chat_id"], d["chat_name"])
-                logger.info(f"Синхронизировано {len(dialogs)} чатов из Telegram")
-            except Exception as e:
-                logger.error(f"Ошибка синхронизации чатов: {e}")
-        
-        def done(_):
-            pass
-        
-        self.run_async(do_sync(), on_done=done)
 
-    # === Данные ===
+        def err(e):
+            self.status_var.set(f"❌ Сервер {SERVER_URL} недоступен")
+            messagebox.showerror(
+                "Нет связи с сервером",
+                f"{e}\n\nПроверьте:\n"
+                f"• SERVER_URL и API_TOKEN в файле .env рядом с программой\n"
+                f"• что сервис lead-hunter запущен на сервере\n"
+                f"• интернет-соединение"
+            )
+            # Разрешаем повторить попытку кнопкой
+            self.reload_btn.configure(state="normal")
+
+        self.run_bg(load, on_done=done, on_error=err)
+
+    def _apply_chats(self, chats: list[dict]):
+        self.chats = {c["chat_id"]: c for c in chats}
+        self._all_chats = list(chats)
+        if self.search_var.get():
+            self._filter_chats()
+        else:
+            self._fill_tree(chats)
 
     def reload_chat_list(self):
+        self.status_var.set("⟳ Загрузка данных с сервера...")
         def done(chats):
-            self.chats = {c["chat_id"]: c for c in chats}
-            self._all_chats = list(chats)  # Сохраняем для фильтрации
-            selected = self.current_chat_id
-            self.tree.delete(*self.tree.get_children())
-            for c in chats:
-                read_mark = "✓" if c.get("is_monitored") else "–"
-                bcast_mark = "✓" if c.get("is_broadcast") else "–"
-                times = c.get("broadcast_times") or ""
-                self.tree.insert("", tk.END, iid=str(c["chat_id"]),
-                                 text=c["chat_name"],
-                                 values=(read_mark, bcast_mark, times))
-            if selected and str(selected) in self.tree.get_children():
-                self.tree.selection_set(str(selected))
-            # Применяем фильтр если есть текст поиска
-            if self.search_var.get():
-                self._filter_chats()
-
-        # Если настроен SERVER_URL, загружаем с сервера, иначе из локальной БД
-        if config.SERVER_URL:
-            self.run_async(self.server_sync.fetch_chats(), on_done=done)
-        else:
-            self.run_async(db.get_all_chats(), on_done=done)
+            self._apply_chats(chats)
+            self._set_controls_enabled(True)
+            self.status_var.set(f"✅ Данные загружены с сервера ({len(chats)} чатов)")
+        self.run_bg(self.api.get_chats, on_done=done)
 
     def _on_select(self, _event):
         sel = self.tree.selection()
@@ -487,7 +369,7 @@ class App:
         if not chat:
             return
         self.current_chat_id = chat_id
-        self.chat_title_var.set(chat["chat_name"])
+        self.chat_title_var.set(chat.get("chat_name") or str(chat_id))
         self.read_var.set(bool(chat.get("is_monitored")))
         self.bcast_var.set(bool(chat.get("is_broadcast")))
 
@@ -503,6 +385,14 @@ class App:
 
     # === Кнопки ===
 
+    def save_gender(self):
+        gender = self.gender_var.get()
+        def done(_):
+            label = "мужской" if gender == "male" else "женский"
+            self.status_var.set(f"💾 Пол разработчика сохранён на сервере: {label}")
+        self.run_bg(lambda: self.api.set_settings({"developer_gender": gender}),
+                    on_done=done)
+
     def save_chat(self):
         if not self.current_chat_id:
             messagebox.showwarning("Нет выбора", "Сначала выберите чат в списке слева.")
@@ -512,7 +402,7 @@ class App:
         if self.no_rules_var.get():
             rules = NO_RULES_MARKER
         else:
-            rules = self.rules_text.get("1.0", tk.END).strip() or None
+            rules = self.rules_text.get("1.0", tk.END).strip()
 
         times = self.times_var.get().strip()
         if self.bcast_var.get():
@@ -539,79 +429,61 @@ class App:
                 )
                 return
 
-        async def do_save():
-            # Сохраняем в локальную БД
-            await db.update_chat_flags(
-                chat_id,
-                int(self.read_var.get()),
-                int(self.bcast_var.get()),
-                rules,
-                times or None,
-            )
-            await self.backend.user_client.reload_chats()
-            await self.backend.scheduler.reload_jobs()
-            
-            # Синхронизируем с сервером если настроен SERVER_URL
-            if config.SERVER_URL:
-                chat_data = {
-                    "chat_id": chat_id,
-                    "chat_name": self.chats[chat_id].get("chat_name"),
-                    "is_monitored": self.read_var.get(),
-                    "is_broadcast": self.bcast_var.get(),
-                    "chat_rules": rules,
-                    "broadcast_times": times or None,
-                }
-                await self.server_sync.update_chat(chat_data)
+        chat_data = {
+            "chat_id": chat_id,
+            "chat_name": self.chats[chat_id].get("chat_name"),
+            "is_monitored": self.read_var.get(),
+            "is_broadcast": self.bcast_var.get(),
+            "chat_rules": rules,
+            "broadcast_times": times,
+        }
 
-        def done(_):
-            self.status_var.set(f"💾 Сохранено: {self.chats[chat_id]['chat_name']}")
-            self.reload_chat_list()
+        self.status_var.set("💾 Сохранение на сервере...")
+        def done(success):
+            if success:
+                self.status_var.set(f"💾 Сохранено на сервере: {self.chats[chat_id]['chat_name']}")
+                self.reload_chat_list()
+            else:
+                messagebox.showerror("Ошибка", "Сервер не подтвердил сохранение.")
 
-        self.run_async(do_save(), on_done=done)
+        self.run_bg(lambda: self.api.update_chat(chat_data), on_done=done)
 
     def test_broadcast(self):
         if not self.current_chat_id:
             messagebox.showwarning("Нет выбора", "Сначала выберите чат в списке слева.")
             return
         chat_id = self.current_chat_id
-        self.status_var.set("🧪 Генерация тестового сообщения (AI)...")
+        self.status_var.set("🧪 Генерация тестового сообщения на сервере (AI)...")
         self.test_btn.configure(state="disabled")
 
         def done(result):
             self.test_btn.configure(state="normal")
-            self.status_var.set("✅ Работает")
+            self.status_var.set("✅ Готово")
             if result is None:
                 messagebox.showerror("Ошибка", "AI не смог сгенерировать сообщение.\n"
-                                               "Проверьте, что AI-провайдер доступен.")
+                                               "Проверьте, что AI-провайдер на сервере доступен.")
                 return
-            if result["skip"]:
+            if result.get("skip"):
                 messagebox.showinfo(
                     "AI пропустил бы отправку",
-                    f"Сообщение НЕ было бы отправлено.\n\nПричина: {result['reason']}"
+                    f"Сообщение НЕ было бы отправлено.\n\nПричина: {result.get('reason')}"
                 )
             else:
                 messagebox.showinfo(
                     "Тестовое сообщение (НЕ отправлено)",
-                    f"AI сгенерировал такой текст:\n\n{result['message']}"
+                    f"AI сгенерировал такой текст:\n\n{result.get('message')}"
                 )
 
         def err(e):
             self.test_btn.configure(state="normal")
-            self.status_var.set("✅ Работает")
+            self.status_var.set("❌ Ошибка генерации")
             messagebox.showerror("Ошибка", str(e))
 
-        self.run_async(self.backend.scheduler.preview_broadcast(chat_id),
-                       on_done=done, on_error=err)
+        self.run_bg(lambda: self.api.preview_broadcast(chat_id), on_done=done, on_error=err)
 
     def sync_dialogs(self):
-        self.status_var.set("🔄 Загрузка списка чатов из Telegram...")
+        self.status_var.set("🔄 Сервер загружает список чатов из Telegram...")
         self.sync_btn.configure(state="disabled")
-
-        async def do_sync():
-            dialogs = await self.backend.user_client.fetch_dialogs()
-            for d in dialogs:
-                await db.upsert_dialog_chat(d["chat_id"], d["chat_name"])
-            return len(dialogs)
 
         def done(count):
             self.sync_btn.configure(state="normal")
@@ -623,52 +495,40 @@ class App:
             self.status_var.set("❌ Ошибка загрузки чатов")
             messagebox.showerror("Ошибка", str(e))
 
-        self.run_async(do_sync(), on_done=done, on_error=err)
-
-    # === Закрытие ===
-
-    def on_close(self):
-        self.status_var.set("Остановка... (закрытие Telegram-сессии)")
-        self._set_controls_enabled(False)
-        self.root.update_idletasks()
-
-        done_flag = threading.Event()
-
-        def stop_backend():
-            self.backend.shutdown()
-            done_flag.set()
-
-        # shutdown блокирует до 15с — выполняем в отдельном потоке;
-        # destroy() вызываем только из GUI-потока (Tkinter не потокобезопасен)
-        threading.Thread(target=stop_backend, daemon=True).start()
-
-        def poll():
-            if done_flag.is_set():
-                self.root.destroy()
-            else:
-                self.root.after(200, poll)
-
-        poll()
+        self.run_bg(self.api.sync_dialogs, on_done=done, on_error=err)
 
 
 def main():
-    errors = check_config()
-    if errors:
-        root = tk.Tk()
+    logger.info("Запуск GUI (тонкий клиент)")
+    logger.info(f"Сервер: {SERVER_URL or 'НЕ НАСТРОЕН'}")
+
+    root = tk.Tk()
+
+    if not SERVER_URL:
         root.withdraw()
         messagebox.showerror(
             "Ошибка конфигурации",
-            "Исправьте .env:\n\n" + "\n".join(f"• {e}" for e in errors)
+            "Не настроен адрес сервера.\n\n"
+            "Создайте файл .env рядом с программой и укажите:\n\n"
+            "SERVER_URL=http://82.202.170.14:8080\n"
+            "API_TOKEN=<токен с сервера>"
         )
         return
 
-    backend = Backend()
-    backend.start()
-
-    root = tk.Tk()
-    App(root, backend)
+    App(root, ServerAPI(SERVER_URL, API_TOKEN))
     root.mainloop()
+    logger.info("GUI закрыт")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        logger.error(f"Фатальная ошибка GUI: {e}", exc_info=True)
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror("Фатальная ошибка", str(e))
+        except Exception:
+            pass
+        input("Нажмите Enter для выхода...")

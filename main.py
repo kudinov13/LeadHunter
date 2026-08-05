@@ -92,20 +92,29 @@ async def main():
     logger.info("Управление через бота уведомлений. Команда: /help")
 
     # Запуск HTTP API для синхронизации с GUI
-    app = web.Application()
-    
+    @web.middleware
+    async def auth_middleware(request, handler):
+        """Авторизация по токену: без правильного X-API-Token доступ запрещён."""
+        if config.API_TOKEN:
+            token = request.headers.get("X-API-Token", "")
+            if token != config.API_TOKEN:
+                return web.json_response({"error": "unauthorized"}, status=401)
+        return await handler(request)
+
+    app = web.Application(middlewares=[auth_middleware])
+
     async def get_chats(request):
         """API: получить список чатов."""
         chats = await db.get_all_chats()
         return web.json_response({"chats": chats})
-    
-    async def update_chat(request):
-        """API: обновить чат."""
+
+    async def api_update_chat(request):
+        """API: обновить чат и сразу применить настройки (мониторинг + рассылки)."""
         data = await request.json()
         chat_id = data.get("chat_id")
         if not chat_id:
             return web.json_response({"error": "chat_id required"}, status=400)
-        
+
         await db.update_chat(
             chat_id=chat_id,
             chat_name=data.get("chat_name"),
@@ -117,10 +126,59 @@ async def main():
             message_variants=data.get("message_variants"),
             schedule_cron=data.get("schedule_cron")
         )
+        # Применяем изменения сразу, без перезапуска сервиса
+        await user_client.reload_chats()
+        await scheduler.reload_jobs()
         return web.json_response({"success": True})
-    
+
+    async def api_sync_dialogs(request):
+        """API: обновить список чатов из Telegram-аккаунта."""
+        dialogs = await user_client.fetch_dialogs()
+        for d in dialogs:
+            await db.upsert_dialog_chat(d["chat_id"], d["chat_name"])
+        return web.json_response({"success": True, "count": len(dialogs)})
+
+    async def api_preview_broadcast(request):
+        """API: сгенерировать тестовое сообщение рассылки (без отправки)."""
+        data = await request.json()
+        chat_id = data.get("chat_id")
+        if not chat_id:
+            return web.json_response({"error": "chat_id required"}, status=400)
+        result = await scheduler.preview_broadcast(chat_id)
+        return web.json_response({"result": result})
+
+    async def api_get_settings(request):
+        """API: настройки (пол разработчика и др.)."""
+        gender = await db.get_setting("developer_gender") or config.DEVELOPER_GENDER
+        return web.json_response({"developer_gender": gender})
+
+    async def api_set_settings(request):
+        """API: сохранить настройки."""
+        data = await request.json()
+        gender = data.get("developer_gender")
+        if gender in ("male", "female"):
+            await db.set_setting("developer_gender", gender)
+        return web.json_response({"success": True})
+
+    async def api_status(request):
+        """API: статус системы для GUI."""
+        hourly = await db.get_hourly_actions_count()
+        daily = await db.get_daily_actions_count()
+        chats = await db.get_monitored_chats()
+        return web.json_response({
+            "running": user_client.is_running,
+            "monitored_chats": len(chats),
+            "hourly_actions": hourly,
+            "daily_actions": daily,
+        })
+
     app.router.add_get('/api/chats', get_chats)
-    app.router.add_post('/api/chats', update_chat)
+    app.router.add_post('/api/chats', api_update_chat)
+    app.router.add_post('/api/sync_dialogs', api_sync_dialogs)
+    app.router.add_post('/api/preview_broadcast', api_preview_broadcast)
+    app.router.add_get('/api/settings', api_get_settings)
+    app.router.add_post('/api/settings', api_set_settings)
+    app.router.add_get('/api/status', api_status)
     
     runner = web.AppRunner(app)
     await runner.setup()
