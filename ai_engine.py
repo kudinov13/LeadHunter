@@ -137,7 +137,6 @@ async def classify_message(message_text: str) -> dict | None:
     try:
         client = _get_client(CLASSIFY_AI_PROVIDER)
         kwargs = {
-            "model": CLASSIFY_MODEL,
             "messages": [
                 {"role": "system", "content": CLASSIFY_SYSTEM_PROMPT},
                 {"role": "user", "content": message_text},

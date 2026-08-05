@@ -427,7 +427,26 @@ class App:
             return
         self.status_var.set("✅ Работает: мониторинг чатов и рассылки активны")
         self._set_controls_enabled(True)
+        
+        # Синхронизируем чаты из Telegram при первом запуске
+        self._sync_chats_from_telegram()
         self.reload_chat_list()
+    
+    def _sync_chats_from_telegram(self):
+        """Синхронизирует чаты из Telegram с локальной БД."""
+        async def do_sync():
+            try:
+                dialogs = await self.backend.user_client.fetch_dialogs()
+                for d in dialogs:
+                    await db.upsert_dialog_chat(d["chat_id"], d["chat_name"])
+                logger.info(f"Синхронизировано {len(dialogs)} чатов из Telegram")
+            except Exception as e:
+                logger.error(f"Ошибка синхронизации чатов: {e}")
+        
+        def done(_):
+            pass
+        
+        self.run_async(do_sync(), on_done=done)
 
     # === Данные ===
 
