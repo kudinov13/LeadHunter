@@ -71,6 +71,7 @@ class NotificationBot:
                 "/approve_gis <id> — одобрить и отправить холодное сообщение\n"
                 "/cold_stats — статистика холодного обхода\n"
                 "/warmup_done — завершить прогрев аккаунта\n"
+                "/active — активные диалоги (с кнопками закрытия)\n"
                 "/help — помощь",
                 reply_markup=self._main_keyboard(),
             )
@@ -91,7 +92,8 @@ class NotificationBot:
                 "/cold_stats — статистика холодного обхода\n"
                 "/warmup_done — завершить прогрев аккаунта\n"
                 "/lastmsg — последнее прочитанное сообщение по каждому чату\n"
-                "/stats — статистика лидов\n\n"
+                "/stats — статистика лидов\n"
+                "/active — активные диалоги (с кнопками закрытия)\n\n"
                 "Когда приходит лид — нажмите «Написать клиенту» чтобы AI начал диалог.\n"
                 "Когда клиент опишет задачу — укажите цену сообщением.\n"
                 "Формат: /price <dialog_id> <цена>"
@@ -187,6 +189,24 @@ class NotificationBot:
                 text += f"  {stat}: {cnt}\n"
             text += f"\nВсего диалогов: {dialogs_count}"
             await message.answer(text)
+
+        @self.dp.message(Command("active"))
+        async def cmd_active(message: Message):
+            """Список активных диалогов с кнопками закрытия."""
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await self._handle_active(message)
+
+        @self.dp.callback_query(F.data.startswith("close_"))
+        async def cb_close_dialog(callback: CallbackQuery):
+            if callback.from_user.id != OWNER_TG_ID:
+                return
+            dialog_id = int(callback.data.split("_")[1])
+            await db.close_dialog(dialog_id)
+            await callback.answer("Диалог закрыт")
+            await callback.message.edit_text(
+                callback.message.text + "\n\n✅ Закрыто"
+            )
 
         @self.dp.message(Command("price"))
         async def cmd_price(message: Message):
@@ -409,6 +429,48 @@ class NotificationBot:
         )
         await message.answer(status_text)
 
+    async def _handle_active(self, message: Message):
+        """Список активных диалогов с кнопками закрытия."""
+        dialogs = await db.get_active_dialogs()
+        if not dialogs:
+            await message.answer("📭 Нет активных диалогов")
+            return
+
+        text = f"📋 Активные диалогы ({len(dialogs)}):\n\n"
+        for d in dialogs:
+            score = d.get("lead_score", 0) or 0
+            stage = d.get("stage", "?")
+            task = (d.get("task") or "")[:60]
+            price = d.get("price")
+            followups = d.get("followup_count", 0)
+            sender = d.get("sender_name", "?")
+            username = d.get("sender_username")
+            updated = d.get("updated_at", "?")
+
+            text += (
+                f"#{d['id']} ⭐{score}/100 | {stage}"
+                + (f" | follow-up:{followups}" if followups else "")
+                + "\n"
+                f"  👤 {sender}"
+                + (f" (@{username})" if username else "")
+                + "\n"
+            )
+            if task:
+                text += f"  🎯 {task}\n"
+            if price:
+                text += f"  💰 {price}\n"
+            text += f"  🕐 {updated}\n\n"
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"✅ Закрыть #{d['id']}",
+                callback_data=f"close_{d['id']}"
+            )] for d in dialogs[:10]
+        ])
+        if len(dialogs) > 10:
+            text += f"\n(показано первые 10 из {len(dialogs)})"
+        await message.answer(text, reply_markup=keyboard)
+
     async def _handle_lastmsg(self, message: Message):
         """Диагностика: последнее прочитанное сообщение в каждом чате + вердикт фильтра.
         Позволяет проверить, что бот реально читает чаты и почему сообщение не стало лидом."""
@@ -460,7 +522,7 @@ class NotificationBot:
                                category: str, business_type: str = None,
                                pain: str = None, hook: str = None,
                                market_price: str = None, market_deadline: str = None,
-                               sender_id: int = None):
+                               lead_score: int = 0, sender_id: int = None):
         """Отправка уведомления о холодном лиде владельцу."""
         category_emoji = {"HOT_COLD": "❄️🔥", "WARM_COLD": "🧊"}.get(category, "❓")
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -475,6 +537,7 @@ class NotificationBot:
             f"👤 Автор: {sender_name}"
             + (f" (@{sender_username})" if sender_username else "") + "\n"
             f"📂 Категория: {category}\n"
+            f"⭐ Скор: {lead_score}/100\n"
         )
         if business_type:
             text += f"🏢 Тип бизнеса: {business_type}\n"
@@ -495,8 +558,8 @@ class NotificationBot:
                           sender_username: str | None, message_text: str,
                           category: str, task: str = None, budget: str = None,
                           deadline: str = None, market_price: str = None,
-                          market_deadline: str = None, sender_id: int = None,
-                          dialog_id: int = None):
+                          market_deadline: str = None, lead_score: int = 0,
+                          sender_id: int = None, dialog_id: int = None):
         """Отправка уведомления о лиде владельцу."""
 
         if category == "TASK_READY":
@@ -545,7 +608,8 @@ class NotificationBot:
             f"📍 Чат: {chat_name}\n"
             f"👤 Автор: {sender_name}"
             + (f" (@{sender_username})" if sender_username else "") + "\n"
-            f"📂 Категория: {category}\n\n"
+            f"📂 Категория: {category}\n"
+            f"⭐ Скор: {lead_score}/100\n\n"
             f"💬 Сообщение:\n{message_text[:500]}\n"
         )
         if task:

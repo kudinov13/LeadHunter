@@ -39,7 +39,7 @@ class LeadResult:
                  task: str = None, budget: str = None, deadline: str = None,
                  market_price: str = None, market_deadline: str = None,
                  business_type: str = None, pain: str = None, hook: str = None,
-                 reason: str = ""):
+                 lead_score: int = 0, reason: str = ""):
         self.is_lead = is_lead
         self.category = category
         self.task = task
@@ -50,6 +50,7 @@ class LeadResult:
         self.business_type = business_type
         self.pain = pain
         self.hook = hook
+        self.lead_score = lead_score
         self.reason = reason
 
 
@@ -150,6 +151,7 @@ async def detect_cold_lead(text: str, message_date: datetime,
     if category not in ("HOT_COLD", "WARM_COLD"):
         return LeadResult(False, category="NOT_LEAD", reason="ai_not_cold_lead")
 
+    score = int(result.get("lead_score", 0) or 0)
     return LeadResult(
         is_lead=True,
         category=category,
@@ -158,6 +160,7 @@ async def detect_cold_lead(text: str, message_date: datetime,
         hook=result.get("hook"),
         market_price=result.get("market_price"),
         market_deadline=result.get("market_deadline"),
+        lead_score=score,
         reason="cold_ai_classified",
     )
 
@@ -189,6 +192,7 @@ async def detect_lead(text: str, message_date: datetime,
     if category not in ("HOT", "WARM"):
         return LeadResult(False, category="NOT_LEAD", reason="ai_not_lead")
 
+    score = int(result.get("lead_score", 0) or 0)
     return LeadResult(
         is_lead=True,
         category=category,
@@ -197,5 +201,6 @@ async def detect_lead(text: str, message_date: datetime,
         deadline=result.get("deadline"),
         market_price=result.get("market_price"),
         market_deadline=result.get("market_deadline"),
+        lead_score=score,
         reason="ai_classified"
     )

@@ -155,6 +155,7 @@ class UserClient:
             deadline=result.deadline,
             market_price=result.market_price,
             market_deadline=result.market_deadline,
+            lead_score=result.lead_score,
         )
 
         logger.info(f"ЛИД #{lead_id} [{result.category}] от {sender_name} в чате {chat_name}")
@@ -174,6 +175,7 @@ class UserClient:
                 deadline=result.deadline,
                 market_price=result.market_price,
                 market_deadline=result.market_deadline,
+                lead_score=result.lead_score,
                 sender_id=sender.id,
             )
 
@@ -198,6 +200,7 @@ class UserClient:
             hook=cold_result.hook,
             market_price=cold_result.market_price,
             market_deadline=cold_result.market_deadline,
+            lead_score=cold_result.lead_score,
         )
         logger.info(f"ХОЛОДНЫЙ ЛИД #{lead_id} [{cold_result.category}] от {sender_name}")
 
@@ -214,6 +217,7 @@ class UserClient:
                 hook=cold_result.hook,
                 market_price=cold_result.market_price,
                 market_deadline=cold_result.market_deadline,
+                lead_score=cold_result.lead_score,
                 sender_id=sender.id,
             )
 

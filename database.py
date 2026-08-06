@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS leads (
     deadline TEXT,
     market_price TEXT,
     market_deadline TEXT,
+    lead_score INTEGER DEFAULT 0,
     status TEXT DEFAULT 'NEW',
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (chat_id) REFERENCES chats(chat_id)
@@ -96,6 +97,7 @@ CREATE TABLE IF NOT EXISTS cold_leads (
     hook TEXT,
     market_price TEXT,
     market_deadline TEXT,
+    lead_score INTEGER DEFAULT 0,
     status TEXT DEFAULT 'NEW',
     created_at TEXT DEFAULT (datetime('now'))
 );
@@ -169,6 +171,8 @@ async def _migrate_leads(db):
         await db.execute("ALTER TABLE leads ADD COLUMN market_price TEXT")
     if "market_deadline" not in columns:
         await db.execute("ALTER TABLE leads ADD COLUMN market_deadline TEXT")
+    if "lead_score" not in columns:
+        await db.execute("ALTER TABLE leads ADD COLUMN lead_score INTEGER DEFAULT 0")
 
 
 async def _migrate_cold_leads(db):
@@ -179,6 +183,8 @@ async def _migrate_cold_leads(db):
         await db.execute("ALTER TABLE cold_leads ADD COLUMN market_price TEXT")
     if "market_deadline" not in columns:
         await db.execute("ALTER TABLE cold_leads ADD COLUMN market_deadline TEXT")
+    if "lead_score" not in columns:
+        await db.execute("ALTER TABLE cold_leads ADD COLUMN lead_score INTEGER DEFAULT 0")
 
 
 async def _migrate_dialogs(db):
@@ -372,16 +378,16 @@ async def add_cold_lead(chat_id: int, chat_name: str, sender_id: int,
                         sender_name: str, sender_username: str, message_text: str,
                         category: str, business_type: str = None, pain: str = None,
                         hook: str = None, market_price: str = None,
-                        market_deadline: str = None) -> int:
+                        market_deadline: str = None, lead_score: int = 0) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """INSERT INTO cold_leads (chat_id, chat_name, sender_id, sender_name,
                sender_username, message_text, category, business_type, pain, hook,
-               market_price, market_deadline)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               market_price, market_deadline, lead_score)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (chat_id, chat_name, sender_id, sender_name, sender_username,
              message_text, category, business_type, pain, hook,
-             market_price, market_deadline)
+             market_price, market_deadline, lead_score)
         )
         await db.commit()
         return cursor.lastrowid
@@ -467,14 +473,14 @@ async def add_lead(chat_id: int, chat_name: str, sender_id: int,
                    sender_name: str, sender_username: str, message_text: str,
                    category: str, task: str = None, budget: str = None,
                    deadline: str = None, market_price: str = None,
-                   market_deadline: str = None) -> int:
+                   market_deadline: str = None, lead_score: int = 0) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """INSERT INTO leads (chat_id, chat_name, sender_id, sender_name, sender_username,
-               message_text, category, task, budget, deadline, market_price, market_deadline)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               message_text, category, task, budget, deadline, market_price, market_deadline, lead_score)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (chat_id, chat_name, sender_id, sender_name, sender_username,
-             message_text, category, task, budget, deadline, market_price, market_deadline)
+             message_text, category, task, budget, deadline, market_price, market_deadline, lead_score)
         )
         await db.commit()
         return cursor.lastrowid
@@ -596,6 +602,32 @@ async def increment_followup(dialog_id: int):
                    last_followup_at = datetime('now'),
                    updated_at = datetime('now')
                WHERE id = ?""",
+            (dialog_id,)
+        )
+        await db.commit()
+
+
+async def get_active_dialogs() -> list[dict]:
+    """Возвращает все активные диалоги (не CLOSED/ENDED) с информацией о лиде."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT d.*, l.category as lead_category, l.task, l.budget,
+                      l.deadline, l.lead_score, l.status as lead_status
+               FROM dialogs d
+               LEFT JOIN leads l ON d.lead_id = l.id
+               WHERE d.stage NOT IN ('CLOSED', 'ENDED')
+               ORDER BY d.updated_at DESC""",
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def close_dialog(dialog_id: int):
+    """Закрывает диалог (помечает как CLOSED)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE dialogs SET stage = 'CLOSED', updated_at = datetime('now') WHERE id = ?",
             (dialog_id,)
         )
         await db.commit()
