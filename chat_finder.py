@@ -20,6 +20,7 @@ from telethon.tl.functions.messages import GetDialogFiltersRequest, UpdateDialog
 from telethon import utils
 
 import ai_engine
+import database as db
 from config import (
     CHAT_SEARCH_KEYWORDS,
     CHAT_SEARCH_MAX_RESULTS,
@@ -28,6 +29,7 @@ from config import (
     CHAT_SCAN_SAMPLE_MESSAGES,
     CHAT_FOLDER_FREELANCE,
     CHAT_FOLDER_BUSINESS,
+    CHAT_JOIN_DAILY_LIMIT,
 )
 
 logger = logging.getLogger(__name__)
@@ -197,15 +199,24 @@ async def search_and_scan(client, keywords: list[str] = None) -> list[dict]:
 
 async def join_and_organize_chat(client, chat: dict, folder: str = None) -> bool:
     """Вступает в чат, мьютит, архивирует, добавляет в папку.
+    Проверяет дневной лимит вступлений.
 
     folder: 'freelance' или 'business' — определяет в какую папку Telegram добавить.
     """
     username = chat["username"]
+
+    # Проверяем дневной лимит
+    joined_today = await db.get_chat_joins_today()
+    if joined_today >= CHAT_JOIN_DAILY_LIMIT:
+        logger.warning(f"Дневной лимит вступлений ({CHAT_JOIN_DAILY_LIMIT}) исчерпан. Пропускаю @{username}")
+        return False
+
     try:
         # 1. Вступаем в чат
         entity = await client.get_entity(username)
         await client(JoinChannelRequest(entity))
-        logger.info(f"Вступил в @{username}")
+        await db.record_chat_join(username)
+        logger.info(f"Вступил в @{username} (сегодня: {joined_today + 1}/{CHAT_JOIN_DAILY_LIMIT})")
 
         await asyncio.sleep(2)
 

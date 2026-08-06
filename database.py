@@ -476,6 +476,44 @@ async def get_cold_outreach_count_today() -> int:
             return row[0] if row else 0
 
 
+# === Chat Join Tracking ===
+
+async def record_chat_join(chat_username: str):
+    """Записывает вступление в чат для учёта дневного лимита."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS chat_join_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_username TEXT,
+                joined_at TEXT DEFAULT (datetime('now'))
+            )"""
+        )
+        await db.execute(
+            "INSERT INTO chat_join_log (chat_username) VALUES (?)",
+            (chat_username,)
+        )
+        await db.commit()
+
+
+async def get_chat_joins_today() -> int:
+    """Возвращает количество вступлений в чаты за сегодня."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """CREATE TABLE IF NOT EXISTS chat_join_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_username TEXT,
+                joined_at TEXT DEFAULT (datetime('now'))
+            )"""
+        )
+        async with db.execute(
+            "SELECT COUNT(*) FROM chat_join_log WHERE DATE(joined_at) = ?",
+            (today,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+
 # === Leads ===
 
 async def has_recent_lead_from_sender(sender_id: int, hours: int = 24) -> bool:

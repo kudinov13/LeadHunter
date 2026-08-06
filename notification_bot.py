@@ -237,6 +237,13 @@ class NotificationBot:
             await callback.answer(f"Вступаю в @{username}...")
             if self.user_client and hasattr(self.user_client, 'client'):
                 import chat_finder
+                from config import CHAT_JOIN_DAILY_LIMIT
+                joined_today = await db.get_chat_joins_today()
+                if joined_today >= CHAT_JOIN_DAILY_LIMIT:
+                    await callback.message.edit_text(
+                        callback.message.text + f"\n\n❌ Дневной лимит вступлений исчерпан ({joined_today}/{CHAT_JOIN_DAILY_LIMIT})"
+                    )
+                    return
                 chat = {"username": username, "title": f"@{username}", "participants_count": 0}
                 success = await chat_finder.join_and_organize_chat(
                     self.user_client.client, chat, folder=folder
@@ -563,6 +570,14 @@ class NotificationBot:
 
         import chat_finder
         import asyncio as _asyncio
+        from config import CHAT_JOIN_DAILY_LIMIT
+
+        joined_today = await db.get_chat_joins_today()
+        remaining = CHAT_JOIN_DAILY_LIMIT - joined_today
+        await message.answer(
+            f"📊 Лимит вступлений сегодня: {joined_today}/{CHAT_JOIN_DAILY_LIMIT} "
+            f"(осталось {remaining})"
+        )
 
         good_chats = await chat_finder.search_and_scan(self.user_client.client)
 
