@@ -33,26 +33,170 @@ class NotificationBot:
         self._register_handlers()
 
     def _main_keyboard(self) -> ReplyKeyboardMarkup:
-        """Постоянная клавиатура с кнопкой быстрой диагностики."""
+        """Главное меню бота."""
         return ReplyKeyboardMarkup(
             keyboard=[
-                [KeyboardButton(text="🔎 Последнее сообщение"), KeyboardButton(text="📊 Статус")],
+                [KeyboardButton(text="📊 Статус"), KeyboardButton(text="🔥 Лиды")],
+                [KeyboardButton(text="💬 Диалоги"), KeyboardButton(text="🔍 Поиск чатов")],
+                [KeyboardButton(text="❄️ Холодный обход"), KeyboardButton(text="📈 Статистика")],
+                [KeyboardButton(text="⚙️ Настройки")],
+            ],
+            resize_keyboard=True,
+        )
+
+    def _leads_keyboard(self) -> ReplyKeyboardMarkup:
+        """Меню лидов."""
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="🔎 Последнее сообщение")],
+                [KeyboardButton(text="📋 Активные диалоги")],
+                [KeyboardButton(text="⬅️ Назад")],
+            ],
+            resize_keyboard=True,
+        )
+
+    def _dialogs_keyboard(self) -> ReplyKeyboardMarkup:
+        """Меню диалогов."""
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="📋 Активные диалоги")],
+                [KeyboardButton(text="📊 A/B статистика")],
+                [KeyboardButton(text="⬅️ Назад")],
+            ],
+            resize_keyboard=True,
+        )
+
+    def _cold_keyboard(self) -> ReplyKeyboardMarkup:
+        """Меню холодного обхода."""
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="📦 Импорт 2GIS"), KeyboardButton(text="➡️ Следующая компания")],
+                [KeyboardButton(text="📊 Статистика обхода")],
+                [KeyboardButton(text="⬅️ Назад")],
+            ],
+            resize_keyboard=True,
+        )
+
+    def _stats_keyboard(self) -> ReplyKeyboardMarkup:
+        """Меню статистики."""
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="📊 A/B статистика")],
+                [KeyboardButton(text="🔎 Последнее сообщение")],
+                [KeyboardButton(text="⬅️ Назад")],
+            ],
+            resize_keyboard=True,
+        )
+
+    def _settings_keyboard(self) -> ReplyKeyboardMarkup:
+        """Меню настроек."""
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="✅ Завершить прогрев")],
+                [KeyboardButton(text="� Список чатов")],
+                [KeyboardButton(text="⬅️ Назад")],
             ],
             resize_keyboard=True,
         )
 
     def _register_handlers(self):
+        # === Навигация по меню ===
+        @self.dp.message(F.text == "🔥 Лиды")
+        async def btn_leads(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await message.answer("🔥 Меню лидов:", reply_markup=self._leads_keyboard())
+
+        @self.dp.message(F.text == "💬 Диалоги")
+        async def btn_dialogs(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await message.answer("💬 Меню диалогов:", reply_markup=self._dialogs_keyboard())
+
+        @self.dp.message(F.text == "🔍 Поиск чатов")
+        async def btn_search_chats(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await self._handle_search_chats(message)
+
+        @self.dp.message(F.text == "❄️ Холодный обход")
+        async def btn_cold(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await message.answer("❄️ Меню холодного обхода:", reply_markup=self._cold_keyboard())
+
+        @self.dp.message(F.text == "📈 Статистика")
+        async def btn_stats(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await message.answer("📈 Меню статистики:", reply_markup=self._stats_keyboard())
+
+        @self.dp.message(F.text == "⚙️ Настройки")
+        async def btn_settings(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await message.answer("⚙️ Меню настроек:", reply_markup=self._settings_keyboard())
+
+        @self.dp.message(F.text == "⬅️ Назад")
+        async def btn_back(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await message.answer("🏠 Главное меню:", reply_markup=self._main_keyboard())
+
+        # === Кнопки действий ===
+        @self.dp.message(F.text == "📊 Статус")
+        async def btn_status(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await self._handle_status(message)
+
         @self.dp.message(F.text == "🔎 Последнее сообщение")
         async def btn_lastmsg(message: Message):
             if message.from_user.id != OWNER_TG_ID:
                 return
             await self._handle_lastmsg(message)
 
-        @self.dp.message(F.text == "📊 Статус")
-        async def btn_status(message: Message):
+        @self.dp.message(F.text == "📋 Активные диалоги")
+        async def btn_active(message: Message):
             if message.from_user.id != OWNER_TG_ID:
                 return
-            await self._handle_status(message)
+            await self._handle_active(message)
+
+        @self.dp.message(F.text == "📊 A/B статистика")
+        async def btn_ab_stats(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await self._handle_ab_stats(message)
+
+        @self.dp.message(F.text == "📦 Импорт 2GIS")
+        async def btn_import_gis(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await self._handle_import_gis(message)
+
+        @self.dp.message(F.text == "➡️ Следующая компания")
+        async def btn_next_gis(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await self._handle_next_gis(message)
+
+        @self.dp.message(F.text == "📊 Статистика обхода")
+        async def btn_cold_stats(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await self._handle_cold_stats(message)
+
+        @self.dp.message(F.text == "✅ Завершить прогрев")
+        async def btn_warmup_done(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await self._handle_warmup_done(message)
+
+        @self.dp.message(F.text == "📋 Список чатов")
+        async def btn_chats_list(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await self._handle_chats_list(message)
 
         @self.dp.message(Command("start"))
         async def cmd_start(message: Message):
@@ -60,21 +204,11 @@ class NotificationBot:
                 return
             await message.answer(
                 "🤖 Бот-ассистент запущен!\n\n"
-                "Я буду присылать вам найденных лидов из чатов.\n\n"
-                "Команды:\n"
-                "/status — статус системы\n"
-                "/chats — список отслеживаемых чатов\n"
-                "/lastmsg — последнее прочитанное сообщение по каждому чату (проверка что бот читает)\n"
-                "/addchat — добавить чат для мониторинга\n"
-                "/import_gis — импорт компаний из 2GIS CSV\n"
-                "/next_gis — следующая 2GIS-компания на проверку\n"
-                "/approve_gis <id> — одобрить и отправить холодное сообщение\n"
-                "/cold_stats — статистика холодного обхода\n"
-                "/warmup_done — завершить прогрев аккаунта\n"
-                "/active — активные диалоги (с кнопками закрытия)\n"
-                "/ab_stats — статистика A/B тестирования первых сообщений\n"
-                "/search_chats — авто-поиск бизнес-чатов по ключевым словам\n"
-                "/help — помощь",
+                "Я буду присылать вам найденных лидов из чатов.\n"
+                "Используйте кнопки меню для управления.\n\n"
+                "Команды также доступны текстом:\n"
+                "/status, /chats, /addchat, /active, /ab_stats,\n"
+                "/search_chats, /lastmsg, /stats, /help",
                 reply_markup=self._main_keyboard(),
             )
 
@@ -621,6 +755,75 @@ class NotificationBot:
             ]])
             await message.answer(text, reply_markup=keyboard)
             await _asyncio.sleep(0.5)
+
+    async def _handle_chats_list(self, message: Message):
+        """Список отслеживаемых чатов."""
+        chats = await db.get_monitored_chats()
+        if not chats:
+            await message.answer("Нет отслеживаемых чатов. Добавьте через /addchat")
+            return
+        text = "📋 Отслеживаемые чаты:\n\n"
+        for c in chats:
+            sched = f" (рассылка: {c['schedule_cron']})" if c.get("schedule_cron") else ""
+            text += f"• {c['chat_name']} — ID: {c['chat_id']}{sched}\n"
+        await message.answer(text)
+
+    async def _handle_warmup_done(self, message: Message):
+        """Завершить прогрев аккаунта."""
+        if self.user_client:
+            await self.user_client.anti_ban.mark_warmup_done()
+            await message.answer("✅ Прогрев аккаунта завершён. Отправка сообщений разблокирована.")
+        else:
+            await message.answer("❌ Клиент не инициализирован")
+
+    async def _handle_import_gis(self, message: Message):
+        """Импорт компаний из 2GIS CSV."""
+        try:
+            count = await gis_importer.import_csv()
+            await message.answer(f"✅ Импортировано {count} компаний из 2GIS CSV")
+        except Exception as e:
+            await message.answer(f"❌ Ошибка импорта: {e}")
+
+    async def _handle_next_gis(self, message: Message):
+        """Следующая компания 2GIS на проверку."""
+        if not self.user_client:
+            await message.answer("❌ Клиент не инициализирован")
+            return
+        company = await db.get_next_pending_gis_company()
+        if not company:
+            await message.answer("📭 Нет компаний на проверку. Импортируйте через «📦 Импорт 2GIS»")
+            return
+        text = (
+            f"🏢 Компания #{company['id']}\n"
+            f"Название: {company.get('name', '?')}\n"
+            f"Адрес: {company.get('address', '?')}\n"
+            f"Телефон: {company.get('phone', '?')}\n"
+            f"Сайт: {company.get('website', '?')}\n"
+        )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_gis_{company['id']}"),
+            InlineKeyboardButton(text="❌ Пропустить", callback_data=f"skip_gis_{company['id']}"),
+        ]])
+        await message.answer(text, reply_markup=keyboard)
+
+    async def _handle_cold_stats(self, message: Message):
+        """Статистика холодного обхода."""
+        async with db.aiosqlite.connect(db.DB_PATH) as conn:
+            conn.row_factory = db.aiosqlite.Row
+            async with conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM gis_companies GROUP BY status"
+            ) as cursor:
+                rows = await cursor.fetchall()
+            today = datetime.now().strftime("%Y-%m-%d")
+            async with conn.execute(
+                "SELECT COUNT(*) FROM cold_outreach_log WHERE DATE(sent_at) = ?", (today,)
+            ) as cursor:
+                sent_today = (await cursor.fetchone())[0]
+        text = "📊 Статистика холодного обхода:\n\n"
+        for r in rows:
+            text += f"• {r['status']}: {r['cnt']}\n"
+        text += f"\nОтправлено сегодня: {sent_today}/{COLD_OUTREACH_DAILY_LIMIT}"
+        await message.answer(text)
 
     async def _handle_lastmsg(self, message: Message):
         """Диагностика: последнее прочитанное сообщение в каждом чате + вердикт фильтра.
