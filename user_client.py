@@ -232,6 +232,17 @@ class UserClient:
             logger.debug(f"ЛС от {sender_id} без активного диалога: {text[:50]}...")
             return
 
+        # A/B: если клиент ответил и у диалога есть ab_variant — фиксируем конверсию
+        # (стадия уже QUALIFYING т.к. обновляется сразу после отправки первого сообщения)
+        ab_variant = dialog.get("ab_variant", 0)
+        if ab_variant is not None and ab_variant >= 0 and dialog["stage"] in ("INITIATING", "QUALIFYING"):
+            # Проверяем что это первый ответ (в истории только 2 сообщения: context + first_message)
+            messages = json.loads(dialog.get("ai_messages_json") or "[]")
+            assistant_count = sum(1 for m in messages if m.get("role") == "assistant")
+            if assistant_count <= 1:
+                await db.ab_record_reply(ab_variant)
+                logger.info(f"A/B: клиент ответил на вариант #{ab_variant} (диалог #{dialog['id']})")
+
         # Проверяем стадию диалога
         if dialog["stage"] in ("TASK_RECEIVED", "ENDED", "CLOSING"):
             # Если на стадии TASK_RECEIVED и клиент пишет — возможно дополняет задачу
@@ -359,8 +370,9 @@ class UserClient:
             return False
 
     async def start_dialog_with_lead(self, lead_id: int) -> bool:
-        """Начало диалога с лидом: AI генерирует первое сообщение и отправляет его."""
+        """Начало диалога с лидом: AI генерирует варианты первого сообщения (A/B), выбирает лучший и отправляет."""
         import ai_engine
+        import random
 
         lead = await db.get_lead(lead_id)
         if not lead:
@@ -396,36 +408,55 @@ class UserClient:
             f"Кратко представьтесь, упомяните что увидели его запрос, "
             f"предложите обсудить проект. Не более 2-3 предложений."
         )
-        context += anti_repeat_note
 
-        messages = [{"role": "user", "content": context}]
-        result = await ai_engine.generate_dialogue_response(
-            messages_history=messages,
-            stage="INITIATING",
+        # A/B: генерируем 3 варианта, выбираем по весам
+        variants = await ai_engine.generate_first_message_variants(
+            context=context,
+            anti_repeat_note=anti_repeat_note,
+            num_variants=3,
         )
 
-        if result is None:
-            logger.error("Ошибка генерации первого сообщения")
-            return False
+        if not variants:
+            # Fallback на старый метод
+            messages = [{"role": "user", "content": context + anti_repeat_note}]
+            result = await ai_engine.generate_dialogue_response(
+                messages_history=messages,
+                stage="INITIATING",
+            )
+            if result is None:
+                logger.error("Ошибка генерации первого сообщения (fallback)")
+                return False
+            first_message, new_stage = result
+            chosen_variant = 0
+        else:
+            weights = await db.ab_get_weights(len(variants))
+            chosen_variant = random.choices(range(len(variants)), weights=weights, k=1)[0]
+            first_message = variants[chosen_variant]
+            new_stage = "QUALIFYING"
 
-        first_message, new_stage = result
-        messages.append({"role": "assistant", "content": first_message})
+        messages = [
+            {"role": "user", "content": context + anti_repeat_note},
+            {"role": "assistant", "content": first_message},
+        ]
 
         await db.update_dialog_messages(dialog_id, json.dumps(messages, ensure_ascii=False))
         await db.update_dialog_stage(dialog_id, new_stage)
+        await db.set_dialog_ab_variant(dialog_id, chosen_variant)
+        await db.ab_record_sent(chosen_variant)
 
         # Отправляем
         success = await self._send_message(lead["sender_id"], first_message, fast=True)
         if success:
             await db.mark_user_seen(lead["sender_id"])
             await db.update_lead_status(lead_id, "DIALOG_STARTED")
-            logger.info(f"Диалог #{dialog_id} начат с лидом #{lead_id}")
+            logger.info(f"Диалог #{dialog_id} начат с лидом #{lead_id} (A/B вариант #{chosen_variant})")
             return True
         return False
 
     async def start_dialog_with_cold_lead(self, lead_id: int) -> bool:
-        """Начало диалога с холодным лидом: AI пишет первое сообщение по боли/зацепке."""
+        """Начало диалога с холодным лидом: AI генерирует варианты первого сообщения (A/B), выбирает и отправляет."""
         import ai_engine
+        import random
 
         lead = await db.get_cold_lead(lead_id)
         if not lead:
@@ -467,29 +498,46 @@ class UserClient:
             "сообщение и предложите обсудить, чем можете быть полезны. "
             "Не более 2-3 предложений, без навязчивости."
         )
-        context += anti_repeat_note
 
-        messages = [{"role": "user", "content": context}]
-        result = await ai_engine.generate_dialogue_response(
-            messages_history=messages,
-            stage="INITIATING",
+        # A/B: генерируем 3 варианта, выбираем по весам
+        variants = await ai_engine.generate_first_message_variants(
+            context=context,
+            anti_repeat_note=anti_repeat_note,
+            num_variants=3,
         )
 
-        if result is None:
-            logger.error("Ошибка генерации первого сообщения холодному лиду")
-            return False
+        if not variants:
+            messages = [{"role": "user", "content": context + anti_repeat_note}]
+            result = await ai_engine.generate_dialogue_response(
+                messages_history=messages,
+                stage="INITIATING",
+            )
+            if result is None:
+                logger.error("Ошибка генерации первого сообщения холодному лиду (fallback)")
+                return False
+            first_message, new_stage = result
+            chosen_variant = 0
+        else:
+            weights = await db.ab_get_weights(len(variants))
+            chosen_variant = random.choices(range(len(variants)), weights=weights, k=1)[0]
+            first_message = variants[chosen_variant]
+            new_stage = "QUALIFYING"
 
-        first_message, new_stage = result
-        messages.append({"role": "assistant", "content": first_message})
+        messages = [
+            {"role": "user", "content": context + anti_repeat_note},
+            {"role": "assistant", "content": first_message},
+        ]
 
         await db.update_dialog_messages(dialog_id, json.dumps(messages, ensure_ascii=False))
         await db.update_dialog_stage(dialog_id, new_stage)
+        await db.set_dialog_ab_variant(dialog_id, chosen_variant)
+        await db.ab_record_sent(chosen_variant)
 
         success = await self._send_message(lead["sender_id"], first_message, fast=True)
         if success:
             await db.mark_user_seen(lead["sender_id"])
             await db.update_cold_lead_status(lead_id, "DIALOG_STARTED")
-            logger.info(f"Холодный диалог #{dialog_id} начат с лидом #{lead_id}")
+            logger.info(f"Холодный диалог #{dialog_id} начат с лидом #{lead_id} (A/B вариант #{chosen_variant})")
             return True
         return False
 

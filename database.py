@@ -60,9 +60,16 @@ CREATE TABLE IF NOT EXISTS dialogs (
     price TEXT,
     followup_count INTEGER DEFAULT 0,
     last_followup_at TEXT,
+    ab_variant INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (lead_id) REFERENCES leads(id)
+);
+
+CREATE TABLE IF NOT EXISTS ab_message_stats (
+    variant INTEGER PRIMARY KEY,
+    sent_count INTEGER DEFAULT 0,
+    replied_count INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS users_seen (
@@ -195,6 +202,8 @@ async def _migrate_dialogs(db):
         await db.execute("ALTER TABLE dialogs ADD COLUMN followup_count INTEGER DEFAULT 0")
     if "last_followup_at" not in columns:
         await db.execute("ALTER TABLE dialogs ADD COLUMN last_followup_at TEXT")
+    if "ab_variant" not in columns:
+        await db.execute("ALTER TABLE dialogs ADD COLUMN ab_variant INTEGER DEFAULT 0")
 
 
 # === Chats ===
@@ -629,6 +638,77 @@ async def close_dialog(dialog_id: int):
         await db.execute(
             "UPDATE dialogs SET stage = 'CLOSED', updated_at = datetime('now') WHERE id = ?",
             (dialog_id,)
+        )
+        await db.commit()
+
+
+# === A/B Testing ===
+
+async def ab_record_sent(variant: int):
+    """Увеличивает счётчик отправленных сообщений для варианта."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO ab_message_stats (variant, sent_count, replied_count)
+               VALUES (?, 1, 0)
+               ON CONFLICT(variant) DO UPDATE SET sent_count = sent_count + 1""",
+            (variant,)
+        )
+        await db.commit()
+
+
+async def ab_record_reply(variant: int):
+    """Увеличивает счётчик ответов для варианта."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE ab_message_stats SET replied_count = replied_count + 1 WHERE variant = ?",
+            (variant,)
+        )
+        await db.commit()
+
+
+async def ab_get_stats() -> list[dict]:
+    """Возвращает статистику по всем вариантам."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT variant, sent_count, replied_count FROM ab_message_stats ORDER BY variant"
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def ab_get_weights(num_variants: int, min_samples: int = 10) -> list[float]:
+    """Возвращает веса для выбора вариантов на основе конверсии.
+    Пока данных мало (< min_samples) — равные веса (чистый A/B тест).
+    Когда данных достаточно — веса пропорциональны конверсии (эксплуатация).
+    """
+    stats = await ab_get_stats()
+    if not stats:
+        return [1.0 / num_variants] * num_variants
+
+    total_sent = sum(s["sent_count"] for s in stats)
+    if total_sent < min_samples:
+        return [1.0 / num_variants] * num_variants
+
+    weights = []
+    for i in range(num_variants):
+        stat = next((s for s in stats if s["variant"] == i), None)
+        if stat and stat["sent_count"] > 0:
+            rate = stat["replied_count"] / stat["sent_count"]
+            weights.append(max(rate, 0.05))
+        else:
+            weights.append(0.05)
+
+    total = sum(weights)
+    return [w / total for w in weights]
+
+
+async def set_dialog_ab_variant(dialog_id: int, variant: int):
+    """Сохраняет номер A/B варианта для диалога."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE dialogs SET ab_variant = ? WHERE id = ?",
+            (variant, dialog_id)
         )
         await db.commit()
 

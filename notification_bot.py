@@ -72,6 +72,7 @@ class NotificationBot:
                 "/cold_stats — статистика холодного обхода\n"
                 "/warmup_done — завершить прогрев аккаунта\n"
                 "/active — активные диалоги (с кнопками закрытия)\n"
+                "/ab_stats — статистика A/B тестирования первых сообщений\n"
                 "/help — помощь",
                 reply_markup=self._main_keyboard(),
             )
@@ -93,7 +94,8 @@ class NotificationBot:
                 "/warmup_done — завершить прогрев аккаунта\n"
                 "/lastmsg — последнее прочитанное сообщение по каждому чату\n"
                 "/stats — статистика лидов\n"
-                "/active — активные диалоги (с кнопками закрытия)\n\n"
+                "/active — активные диалоги (с кнопками закрытия)\n"
+                "/ab_stats — статистика A/B тестирования первых сообщений\n\n"
                 "Когда приходит лид — нажмите «Написать клиенту» чтобы AI начал диалог.\n"
                 "Когда клиент опишет задачу — укажите цену сообщением.\n"
                 "Формат: /price <dialog_id> <цена>"
@@ -196,6 +198,13 @@ class NotificationBot:
             if message.from_user.id != OWNER_TG_ID:
                 return
             await self._handle_active(message)
+
+        @self.dp.message(Command("ab_stats"))
+        async def cmd_ab_stats(message: Message):
+            """Статистика A/B тестирования первых сообщений."""
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await self._handle_ab_stats(message)
 
         @self.dp.callback_query(F.data.startswith("close_"))
         async def cb_close_dialog(callback: CallbackQuery):
@@ -470,6 +479,35 @@ class NotificationBot:
         if len(dialogs) > 10:
             text += f"\n(показано первые 10 из {len(dialogs)})"
         await message.answer(text, reply_markup=keyboard)
+
+    async def _handle_ab_stats(self, message: Message):
+        """Статистика A/B тестирования первых сообщений."""
+        stats = await db.ab_get_stats()
+        if not stats:
+            await message.answer("📭 A/B статистика пуста. Пока не отправлено ни одного варианта.")
+            return
+
+        variant_names = ["Прямой", "Дружелюбный", "Вопросный"]
+        text = "📊 A/B статистика первых сообщений:\n\n"
+        total_sent = 0
+        total_replied = 0
+        for s in stats:
+            v = s["variant"]
+            name = variant_names[v] if v < len(variant_names) else f"Вариант {v}"
+            sent = s["sent_count"]
+            replied = s["replied_count"]
+            rate = (replied / sent * 100) if sent > 0 else 0
+            total_sent += sent
+            total_replied += replied
+            text += (
+                f"#{v} {name}\n"
+                f"  Отправлено: {sent}\n"
+                f"  Ответов: {replied}\n"
+                f"  Конверсия: {rate:.1f}%\n\n"
+            )
+        overall = (total_replied / total_sent * 100) if total_sent > 0 else 0
+        text += f"📈 Всего: {total_sent} отправлено, {total_replied} ответов ({overall:.1f}%)"
+        await message.answer(text)
 
     async def _handle_lastmsg(self, message: Message):
         """Диагностика: последнее прочитанное сообщение в каждом чате + вердикт фильтра.

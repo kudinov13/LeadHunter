@@ -352,6 +352,51 @@ async def generate_dialogue_response(
         return None
 
 
+# === A/B Testing: генерация вариантов первого сообщения ===
+
+_AB_VARIANT_STYLES = [
+    "Прямой подход: сразу к делу, покажите экспертизу и предложите обсудить проект.",
+    "Дружелюбный подход: начните с эмпатии к проблеме клиента, мягко предложите помощь.",
+    "Вопросный подход: задайте уточняющий вопрос по его запросу, чтобы завязать диалог.",
+]
+
+
+async def generate_first_message_variants(
+    context: str,
+    anti_repeat_note: str = "",
+    num_variants: int = 3,
+) -> list[str]:
+    """Генерирует num_variants вариантов первого сообщения разными подходами.
+
+    Возвращает список текстов (может быть меньше num_variants при ошибках).
+    """
+    gender_ru = await _get_gender_ru()
+    system_content = f"{DIALOG_SYSTEM_PROMPT.format(gender=gender_ru)}\n\n{DEVELOPER_INFO}\n\n"
+    system_content += "Текущая стадия диалога: INITIATING\n"
+
+    variants = []
+    for i in range(num_variants):
+        style = _AB_VARIANT_STYLES[i % len(_AB_VARIANT_STYLES)]
+        user_msg = f"{context}\n\nСтиль сообщения: {style}\n{anti_repeat_note}"
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_msg},
+        ]
+        try:
+            content = await _chat_with_fallback(
+                DIALOG_AI_PROVIDER, DIALOG_MODEL, messages,
+                temperature=0.8 + i * 0.1, max_tokens=300,
+            )
+            if content and content.strip():
+                variants.append(content.strip())
+        except Exception as e:
+            logger.error(f"Ошибка генерации варианта #{i}: {e}")
+
+    if not variants:
+        logger.error("Не удалось сгенерировать ни одного варианта первого сообщения")
+    return variants
+
+
 async def generate_broadcast(chat_rules: str, recent_messages: list[str],
                              now_str: str) -> dict | None:
     """Генерация рекламной рассылки с учётом правил чата.
