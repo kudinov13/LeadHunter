@@ -73,6 +73,7 @@ class NotificationBot:
                 "/warmup_done — завершить прогрев аккаунта\n"
                 "/active — активные диалоги (с кнопками закрытия)\n"
                 "/ab_stats — статистика A/B тестирования первых сообщений\n"
+                "/search_chats — авто-поиск бизнес-чатов по ключевым словам\n"
                 "/help — помощь",
                 reply_markup=self._main_keyboard(),
             )
@@ -95,7 +96,8 @@ class NotificationBot:
                 "/lastmsg — последнее прочитанное сообщение по каждому чату\n"
                 "/stats — статистика лидов\n"
                 "/active — активные диалоги (с кнопками закрытия)\n"
-                "/ab_stats — статистика A/B тестирования первых сообщений\n\n"
+                "/ab_stats — статистика A/B тестирования первых сообщений\n"
+                "/search_chats — авто-поиск бизнес-чатов по ключевым словам\n\n"
                 "Когда приходит лид — нажмите «Написать клиенту» чтобы AI начал диалог.\n"
                 "Когда клиент опишет задачу — укажите цену сообщением.\n"
                 "Формат: /price <dialog_id> <цена>"
@@ -206,6 +208,13 @@ class NotificationBot:
                 return
             await self._handle_ab_stats(message)
 
+        @self.dp.message(Command("search_chats"))
+        async def cmd_search_chats(message: Message):
+            """Авто-поиск новых чатов по ключевым словам."""
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await self._handle_search_chats(message)
+
         @self.dp.callback_query(F.data.startswith("close_"))
         async def cb_close_dialog(callback: CallbackQuery):
             if callback.from_user.id != OWNER_TG_ID:
@@ -215,6 +224,41 @@ class NotificationBot:
             await callback.answer("Диалог закрыт")
             await callback.message.edit_text(
                 callback.message.text + "\n\n✅ Закрыто"
+            )
+
+        @self.dp.callback_query(F.data.startswith("approve_chat_"))
+        async def cb_approve_chat(callback: CallbackQuery):
+            if callback.from_user.id != OWNER_TG_ID:
+                return
+            parts = callback.data.split("_")
+            # approve_chat_{folder}_{username}
+            folder = parts[2]
+            username = parts[3]
+            await callback.answer(f"Вступаю в @{username}...")
+            if self.user_client and hasattr(self.user_client, 'client'):
+                import chat_finder
+                chat = {"username": username, "title": f"@{username}", "participants_count": 0}
+                success = await chat_finder.join_and_organize_chat(
+                    self.user_client.client, chat, folder=folder
+                )
+                if success:
+                    await callback.message.edit_text(
+                        callback.message.text + f"\n\n✅ Вступил, мьют, архив, папка: {folder}"
+                    )
+                else:
+                    await callback.message.edit_text(
+                        callback.message.text + "\n\n❌ Ошибка вступления"
+                    )
+            else:
+                await callback.message.answer("❌ Клиент не инициализирован")
+
+        @self.dp.callback_query(F.data.startswith("reject_chat_"))
+        async def cb_reject_chat(callback: CallbackQuery):
+            if callback.from_user.id != OWNER_TG_ID:
+                return
+            await callback.answer("Отклонено")
+            await callback.message.edit_text(
+                callback.message.text + "\n\n❌ Отклонено"
             )
 
         @self.dp.message(Command("price"))
@@ -508,6 +552,60 @@ class NotificationBot:
         overall = (total_replied / total_sent * 100) if total_sent > 0 else 0
         text += f"📈 Всего: {total_sent} отправлено, {total_replied} ответов ({overall:.1f}%)"
         await message.answer(text)
+
+    async def _handle_search_chats(self, message: Message):
+        """Авто-поиск чатов: ищет, сканирует, предлагает для одобрения."""
+        if not self.user_client or not hasattr(self.user_client, 'client'):
+            await message.answer("❌ Клиент не инициализирован")
+            return
+
+        await message.answer("🔍 Ищу чаты по ключевым словам...")
+
+        import chat_finder
+        import asyncio as _asyncio
+
+        good_chats = await chat_finder.search_and_scan(self.user_client.client)
+
+        if not good_chats:
+            await message.answer("📭 Бизнес-чатов не найдено. Попробуйте позже или измените ключевые слова.")
+            return
+
+        await message.answer(f"✅ Найдено {len(good_chats)} бизнес-чатов. Отправляю на проверку...")
+
+        for chat in good_chats[:10]:
+            scan = chat.get("scan", {})
+            category = scan.get("category", "unknown")
+            reason = scan.get("reason", "")
+            has_orders = scan.get("has_orders", False)
+            folder = "freelance" if has_orders else "business"
+
+            cat_emoji = {"freelance": "🔥", "business": "💼"}.get(category, "❓")
+
+            text = (
+                f"{cat_emoji} Чат: {chat['title']}\n"
+                f"📍 @{chat['username']}\n"
+                f"👥 Участников: {chat['participants_count']}\n"
+                f"📂 Категория: {category}\n"
+                f"📝 {reason}\n"
+            )
+
+            # Показываем пример сообщения
+            samples = scan.get("sample_texts", [])
+            if samples:
+                text += f"\n💬 Пример:\n  {samples[0][:150]}...\n"
+
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text=f"✅ Вступить ({folder})",
+                    callback_data=f"approve_chat_{folder}_{chat['username']}"
+                ),
+                InlineKeyboardButton(
+                    text="❌ Отклонить",
+                    callback_data=f"reject_chat_0_{chat['username']}"
+                ),
+            ]])
+            await message.answer(text, reply_markup=keyboard)
+            await _asyncio.sleep(0.5)
 
     async def _handle_lastmsg(self, message: Message):
         """Диагностика: последнее прочитанное сообщение в каждом чате + вердикт фильтра.

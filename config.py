@@ -81,6 +81,20 @@ DB_PATH = BASE_DIR / os.getenv("DB_PATH", "data/bot.db")
 # === Scheduler ===
 SCHEDULER_TIMEZONE = os.getenv("SCHEDULER_TIMEZONE", "Asia/Novosibirsk")
 
+# === Auto Chat Discovery ===
+CHAT_SEARCH_KEYWORDS = [
+    k.strip() for k in os.getenv("CHAT_SEARCH_KEYWORDS",
+    "фриланс,ищу разработчика,IT заказы,разработка под ключ,ищу программиста,заказ на разработку,веб разработка"
+    ).split(",") if k.strip()]
+CHAT_SEARCH_MAX_RESULTS = int(os.getenv("CHAT_SEARCH_MAX_RESULTS", "20"))
+CHAT_SEARCH_MIN_MEMBERS = int(os.getenv("CHAT_SEARCH_MIN_MEMBERS", "100"))
+CHAT_SEARCH_MAX_MEMBERS = int(os.getenv("CHAT_SEARCH_MAX_MEMBERS", "50000"))
+CHAT_SCAN_SAMPLE_MESSAGES = int(os.getenv("CHAT_SCAN_SAMPLE_MESSAGES", "20"))
+
+# Папки для сортировки чатов в Telegram
+CHAT_FOLDER_FREELANCE = os.getenv("CHAT_FOLDER_FREELANCE", "Фриланс")
+CHAT_FOLDER_BUSINESS = os.getenv("CHAT_FOLDER_BUSINESS", "Бизнес")
+
 # === Follow-up (дожим) ===
 FOLLOWUP_ENABLED = os.getenv("FOLLOWUP_ENABLED", "true").lower() in ("1", "true", "yes")
 FOLLOWUP_HOURS_THRESHOLD = int(os.getenv("FOLLOWUP_HOURS_THRESHOLD", "24"))
