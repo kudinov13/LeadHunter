@@ -43,6 +43,8 @@ class UserClient:
         self.notification_callback = notification_callback
         self._monitored_chat_ids: set[int] = set()
         self._running = False
+        self._me_id: int | None = None
+        self._ai_semaphore = asyncio.Semaphore(5)
 
     async def start(self):
         """Запуск клиента и авторизация."""
@@ -52,6 +54,7 @@ class UserClient:
 
         await self.anti_ban.init_warmup()
         await self._load_monitored_chats()
+        self._me_id = me.id
         self._register_handlers()
         self._running = True
 
@@ -79,21 +82,27 @@ class UserClient:
             if chat_id not in self._monitored_chat_ids:
                 return
 
-            # Игнорируем свои собственные сообщения
-            me = await self.client.get_me()
-            if event.sender_id == me.id:
+            # Игнорируем свои собственные сообщения (кэшированный ID)
+            if event.sender_id == self._me_id:
                 return
 
-            await self._process_chat_message(event)
+            # Запускаем обработку без блокировки следующих сообщений
+            asyncio.create_task(self._process_chat_message_safe(event))
 
         @self.client.on(events.NewMessage(incoming=True))
         async def on_private_message(event):
             """Обработка входящих личных сообщений (ответы клиентов в диалогах)."""
             if event.is_private:
-                me = await self.client.get_me()
-                if event.sender_id == me.id:
+                if event.sender_id == self._me_id:
                     return
-                await self._process_private_message(event)
+                asyncio.create_task(self._process_private_message(event))
+
+    async def _process_chat_message_safe(self, event):
+        """Обёртка над _process_chat_message с обработкой ошибок и семафором."""
+        try:
+            await self._process_chat_message(event)
+        except Exception as e:
+            logger.error(f"Ошибка обработки сообщения из чата {event.chat_id}: {e}", exc_info=True)
 
     async def _process_chat_message(self, event):
         """Обработка сообщения из отслеживаемого чата."""
@@ -106,9 +115,10 @@ class UserClient:
         await db.log_message(event.chat_id, sender.id, sender_name, text,
                              message.id, "incoming")
 
-        # Детекция лида
+        # Детекция лида (с семафором для AI-вызовов)
         sender_is_bot = getattr(sender, "bot", False)
-        result = await detect_lead(text, message.date, sender_is_bot)
+        async with self._ai_semaphore:
+            result = await detect_lead(text, message.date, sender_is_bot)
 
         if not result.is_lead:
             if result.reason.startswith("level"):
@@ -116,7 +126,8 @@ class UserClient:
             verdict = result.reason
             # Пробуем найти холодного лида, если включено
             if COLD_LEAD_ENABLED:
-                cold_result = await detect_cold_lead(text, message.date, sender_is_bot)
+                async with self._ai_semaphore:
+                    cold_result = await detect_cold_lead(text, message.date, sender_is_bot)
                 if cold_result.is_lead:
                     await db.update_message_verdict(
                         event.chat_id, message.id, f"cold_{cold_result.category}")
