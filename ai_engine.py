@@ -9,7 +9,7 @@ import logging
 import httpx
 from openai import AsyncOpenAI
 from config import (OMNIROUTE_API_KEY, OMNIROUTE_BASE_URL,
-                    GROQ_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY,
+                    GROQ_API_KEY, GROQ_API_KEY_2, OPENROUTER_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY,
                     AI_HTTP_PROXY,
                     DIALOG_AI_PROVIDER, DIALOG_MODEL,
                     CLASSIFY_AI_PROVIDER, CLASSIFY_MODEL,
@@ -46,6 +46,31 @@ _JSON_MODELS = {
 }
 
 _clients: dict[str, AsyncOpenAI] = {}
+
+# Все ключи Groq для ротации при 429
+_GROQ_KEYS = [k for k in (GROQ_API_KEY, GROQ_API_KEY_2) if k]
+_groq_key_idx = 0
+
+
+def _get_groq_client() -> AsyncOpenAI:
+    """Создаёт Groq-клиент с текущим ключом (ротация при 429)."""
+    global _groq_key_idx
+    key = _GROQ_KEYS[_groq_key_idx % len(_GROQ_KEYS)]
+    return AsyncOpenAI(
+        api_key=key,
+        base_url=GROQ_BASE_URL,
+        http_client=_proxied_http_client()
+    )
+
+
+def _rotate_groq_key():
+    """Переключается на следующий Groq ключ."""
+    global _groq_key_idx
+    _groq_key_idx += 1
+    if len(_GROQ_KEYS) > 1:
+        logger.warning(f"Ротация Groq ключа: теперь ключ #{_groq_key_idx % len(_GROQ_KEYS) + 1}")
+    # Сбрасываем кэш клиента чтобы пересоздался с новым ключом
+    _clients.pop("groq", None)
 
 
 def _extract_json(text: str | None) -> dict:
@@ -123,13 +148,9 @@ def _get_client(provider: str) -> AsyncOpenAI:
                 base_url=OMNIROUTE_BASE_URL
             )
         elif provider == "groq":
-            if not GROQ_API_KEY:
+            if not _GROQ_KEYS:
                 raise ValueError("GROQ_API_KEY не настроен. Получите бесплатно на console.groq.com")
-            _clients[provider] = AsyncOpenAI(
-                api_key=GROQ_API_KEY,
-                base_url=GROQ_BASE_URL,
-                http_client=_proxied_http_client()
-            )
+            _clients[provider] = _get_groq_client()
         elif provider == "openrouter":
             if not OPENROUTER_API_KEY:
                 raise ValueError("OPENROUTER_API_KEY не настроен. Получите на openrouter.ai")
@@ -189,15 +210,37 @@ async def _chat_with_fallback(
         error_text = str(e).lower()
         if not any(code in error_text for code in _RETRYABLE_CODES):
             raise
-        logger.warning(f"Модель {model} недоступна ({e}), пробуем auto fallback")
+        logger.warning(f"Модель {model} недоступна ({e}), пробуем fallback")
         if provider == "groq":
-            # У Groq нет модели "auto" — сразу пробуем резервную модель на том же провайдере
+            # Ротация ключей Groq при 429 — пробуем второй ключ перед fallback моделью
+            if len(_GROQ_KEYS) > 1 and "429" in error_text:
+                _rotate_groq_key()
+                try:
+                    new_client = _get_client("groq")
+                    response = await new_client.chat.completions.create(
+                        model=model, messages=messages, **kwargs
+                    )
+                    return response.choices[0].message.content
+                except Exception as e_rot:
+                    logger.warning(f"Второй ключ тоже не сработал: {e_rot}")
+            # Пробуем резервную модель на текущем ключе
             try:
                 response = await client.chat.completions.create(
                     model=_GROQ_FALLBACK_MODEL, messages=messages, **kwargs
                 )
                 return response.choices[0].message.content
             except Exception as e2:
+                # Если есть второй ключ — пробуем резервную модель с ним
+                if len(_GROQ_KEYS) > 1 and _groq_key_idx == 0:
+                    _rotate_groq_key()
+                    try:
+                        new_client = _get_client("groq")
+                        response = await new_client.chat.completions.create(
+                            model=_GROQ_FALLBACK_MODEL, messages=messages, **kwargs
+                        )
+                        return response.choices[0].message.content
+                    except Exception as e3:
+                        logger.error(f"Резервная модель + второй ключ не сработали: {e3}")
                 logger.error(f"Резервная модель Groq тоже не сработала: {e2}")
                 raise
         try:
@@ -207,7 +250,7 @@ async def _chat_with_fallback(
             return response.choices[0].message.content
         except Exception as e2:
             logger.error(f"Fallback auto тоже не сработал: {e2}")
-            if provider != "groq" and GROQ_API_KEY:
+            if provider != "groq" and _GROQ_KEYS:
                 logger.warning("Пробуем кросс-провайдерный fallback на Groq")
                 try:
                     groq_client = _get_client("groq")
