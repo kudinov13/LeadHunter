@@ -295,6 +295,23 @@ class UserClient:
                     dialog_id=dialog["id"],
                 )
 
+    async def _anti_repeat_note(self) -> str:
+        """Формирует блок с последними отправленными первыми сообщениями,
+        чтобы AI не повторял одну и ту же структуру/фразы разным людям
+        (иначе Telegram может расценить это как спам-рассылку и забанить аккаунт)."""
+        recent = await db.get_recent_dialog_openers(limit=8)
+        if not recent:
+            return ""
+        numbered = "\n".join(f"{i+1}. {m}" for i, m in enumerate(recent))
+        return (
+            "\n\n=== ПОСЛЕДНИЕ ПЕРВЫЕ СООБЩЕНИЯ, ОТПРАВЛЕННЫЕ ДРУГИМ ЛЮДЯМ ===\n"
+            f"{numbered}\n\n"
+            "ВАЖНО: не повторяй структуру, порядок слов и фразы из этих сообщений. "
+            "Сформулируй своё сообщение совершенно иначе — другое начало, другой порядок "
+            "мыслей, другие слова. Разные люди должны получать явно РАЗНЫЕ сообщения, "
+            "иначе Telegram может посчитать это спам-рассылкой и заблокировать аккаунт."
+        )
+
     async def _send_message(self, sender_id: int, text: str):
         """Отправка сообщения с анти-бан проверками."""
         if not await self.anti_ban.can_send():
@@ -333,6 +350,9 @@ class UserClient:
             logger.warning("Невозможно начать диалог: анти-бан лимиты")
             return False
 
+        # Заметка об анти-повторе — до создания диалога, чтобы не учитывать текущую пустую запись
+        anti_repeat_note = await self._anti_repeat_note()
+
         # Создаём запись диалога
         dialog_id = await db.create_dialog(
             lead_id=lead_id,
@@ -349,6 +369,7 @@ class UserClient:
             f"Кратко представьтесь, упомяните что увидели его запрос, "
             f"предложите обсудить проект. Не более 2-3 предложений."
         )
+        context += anti_repeat_note
 
         messages = [{"role": "user", "content": context}]
         result = await ai_engine.generate_dialogue_response(
@@ -392,6 +413,8 @@ class UserClient:
             logger.warning("Невозможно начать холодный диалог: анти-бан лимиты")
             return False
 
+        anti_repeat_note = await self._anti_repeat_note()
+
         dialog_id = await db.create_dialog(
             lead_id=lead_id,
             sender_id=lead["sender_id"],
@@ -417,6 +440,7 @@ class UserClient:
             "сообщение и предложите обсудить, чем можете быть полезны. "
             "Не более 2-3 предложений, без навязчивости."
         )
+        context += anti_repeat_note
 
         messages = [{"role": "user", "content": context}]
         result = await ai_engine.generate_dialogue_response(

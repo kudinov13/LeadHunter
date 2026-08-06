@@ -556,6 +556,30 @@ async def log_message(chat_id: int, sender_id: int, sender_name: str,
         await db.commit()
 
 
+async def get_recent_dialog_openers(limit: int = 8) -> list[str]:
+    """Последние первые сообщения, отправленные разным лидам при старте диалога.
+    Нужно, чтобы AI не повторял одну и ту же структуру/фразы разным людям
+    (иначе Telegram может забанить аккаунт за похожие рассылки)."""
+    import json
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT ai_messages_json FROM dialogs ORDER BY id DESC LIMIT ?",
+            (limit,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+    openers = []
+    for (messages_json,) in rows:
+        try:
+            messages = json.loads(messages_json or "[]")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for m in messages:
+            if m.get("role") == "assistant":
+                openers.append(m["content"])
+                break
+    return openers
+
+
 async def update_message_verdict(chat_id: int, message_id: int, verdict: str):
     """Записывает вердикт фильтрации (level0_filtered/ai_error/lead_HOT/cold_...) для диагностики."""
     async with aiosqlite.connect(DB_PATH) as db:
