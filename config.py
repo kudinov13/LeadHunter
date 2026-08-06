@@ -25,6 +25,11 @@ TG_MTPROTO_SECRET = os.getenv("TG_MTPROTO_SECRET", "").strip()
 # Если пусто - прямое подключение (может не работать в России)
 TG_BOT_PROXY = os.getenv("TG_BOT_PROXY", "").strip()
 
+# === Proxy для внешних AI-провайдеров (Groq, OpenRouter и т.п.) ===
+# Groq и некоторые другие провайдеры блокируют запросы с российских IP (403 Forbidden).
+# По умолчанию используем тот же прокси, что и для Telegram Bot API.
+AI_HTTP_PROXY = os.getenv("AI_HTTP_PROXY", "").strip() or TG_BOT_PROXY
+
 # === Notification Bot (aiogram) ===
 NOTIF_BOT_TOKEN = os.getenv("NOTIF_BOT_TOKEN", "")
 OWNER_TG_ID = int(os.getenv("OWNER_TG_ID", "0"))

@@ -6,9 +6,11 @@ Groq и OpenRouter также имеют бесплатные модели.
 """
 import json
 import logging
+import httpx
 from openai import AsyncOpenAI
 from config import (OMNIROUTE_API_KEY, OMNIROUTE_BASE_URL,
                     GROQ_API_KEY, OPENROUTER_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY,
+                    AI_HTTP_PROXY,
                     DIALOG_AI_PROVIDER, DIALOG_MODEL,
                     CLASSIFY_AI_PROVIDER, CLASSIFY_MODEL,
                     BROADCAST_AI_PROVIDER, BROADCAST_MODEL,
@@ -105,6 +107,13 @@ def _extract_json(text: str | None) -> dict:
     return dict(_default)
 
 
+def _proxied_http_client() -> httpx.AsyncClient | None:
+    """HTTP-клиент с прокси для внешних провайдеров (Groq блокирует РФ-IP 403 Forbidden)."""
+    if AI_HTTP_PROXY:
+        return httpx.AsyncClient(proxy=AI_HTTP_PROXY)
+    return None
+
+
 def _get_client(provider: str) -> AsyncOpenAI:
     """Возвращает клиент для указанного провайдера."""
     if provider not in _clients:
@@ -118,32 +127,36 @@ def _get_client(provider: str) -> AsyncOpenAI:
                 raise ValueError("GROQ_API_KEY не настроен. Получите бесплатно на console.groq.com")
             _clients[provider] = AsyncOpenAI(
                 api_key=GROQ_API_KEY,
-                base_url=GROQ_BASE_URL
+                base_url=GROQ_BASE_URL,
+                http_client=_proxied_http_client()
             )
         elif provider == "openrouter":
             if not OPENROUTER_API_KEY:
                 raise ValueError("OPENROUTER_API_KEY не настроен. Получите на openrouter.ai")
             _clients[provider] = AsyncOpenAI(
                 api_key=OPENROUTER_API_KEY,
-                base_url=OPENROUTER_BASE_URL
+                base_url=OPENROUTER_BASE_URL,
+                http_client=_proxied_http_client()
             )
         elif provider == "openai":
             if not OPENAI_API_KEY:
                 raise ValueError("OPENAI_API_KEY не настроен")
-            _clients[provider] = AsyncOpenAI(api_key=OPENAI_API_KEY)
+            _clients[provider] = AsyncOpenAI(api_key=OPENAI_API_KEY, http_client=_proxied_http_client())
         elif provider == "deepseek":
             if not DEEPSEEK_API_KEY:
                 raise ValueError("DEEPSEEK_API_KEY не настроен")
             _clients[provider] = AsyncOpenAI(
                 api_key=DEEPSEEK_API_KEY,
-                base_url=DEEPSEEK_BASE_URL
+                base_url=DEEPSEEK_BASE_URL,
+                http_client=_proxied_http_client()
             )
         elif provider == "anthropic":
             if not ANTHROPIC_API_KEY:
                 raise ValueError("ANTHROPIC_API_KEY не настроен. Получите на console.anthropic.com")
             _clients[provider] = AsyncOpenAI(
                 api_key=ANTHROPIC_API_KEY,
-                base_url=ANTHROPIC_BASE_URL
+                base_url=ANTHROPIC_BASE_URL,
+                http_client=_proxied_http_client()
             )
         else:
             raise ValueError(f"Неизвестный AI провайдер: {provider}")
