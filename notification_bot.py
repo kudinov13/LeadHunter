@@ -459,6 +459,7 @@ class NotificationBot:
                                sender_username: str | None, message_text: str,
                                category: str, business_type: str = None,
                                pain: str = None, hook: str = None,
+                               market_price: str = None, market_deadline: str = None,
                                sender_id: int = None):
         """Отправка уведомления о холодном лиде владельцу."""
         category_emoji = {"HOT_COLD": "❄️🔥", "WARM_COLD": "🧊"}.get(category, "❓")
@@ -481,7 +482,13 @@ class NotificationBot:
             text += f"💡 Потребность: {pain}\n"
         text += f"\n💬 Сообщение:\n{message_text[:500]}\n"
         if hook:
-            text += f"\n🎯 Подход: {hook}"
+            text += f"\n🎯 Подход: {hook}\n"
+        if market_price or market_deadline:
+            text += "\n📊 Рыночная оценка (совет AI):\n"
+            if market_price:
+                text += f"   💵 Рекомендуемая цена: {market_price}\n"
+            if market_deadline:
+                text += f"   ⏱ Рекомендуемый срок: {market_deadline}\n"
         await self.bot.send_message(OWNER_TG_ID, text, reply_markup=keyboard)
 
     async def notify_lead(self, lead_id: int, chat_name: str, sender_name: str,

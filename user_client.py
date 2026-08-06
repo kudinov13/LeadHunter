@@ -185,6 +185,8 @@ class UserClient:
             business_type=cold_result.business_type,
             pain=cold_result.pain,
             hook=cold_result.hook,
+            market_price=cold_result.market_price,
+            market_deadline=cold_result.market_deadline,
         )
         logger.info(f"ХОЛОДНЫЙ ЛИД #{lead_id} [{cold_result.category}] от {sender_name}")
 
@@ -199,6 +201,8 @@ class UserClient:
                 business_type=cold_result.business_type,
                 pain=cold_result.pain,
                 hook=cold_result.hook,
+                market_price=cold_result.market_price,
+                market_deadline=cold_result.market_deadline,
                 sender_id=sender.id,
             )
 
@@ -316,13 +320,17 @@ class UserClient:
             "иначе Telegram может посчитать это спам-рассылкой и заблокировать аккаунт."
         )
 
-    async def _send_message(self, sender_id: int, text: str):
-        """Отправка сообщения с анти-бан проверками."""
+    async def _send_message(self, sender_id: int, text: str, fast: bool = False):
+        """Отправка сообщения с анти-бан проверками.
+        
+        fast=True — пропуск долгой паузы перед действием (для пользовательских команд).
+        """
         if not await self.anti_ban.can_send():
             logger.warning("Отправка заблокирована анти-бан модулем")
             return False
 
-        await self.anti_ban.wait_before_action()
+        if not fast:
+            await self.anti_ban.wait_before_action()
         await self.anti_ban.wait_typing(text)
 
         try:
@@ -392,7 +400,7 @@ class UserClient:
         await db.update_dialog_stage(dialog_id, new_stage)
 
         # Отправляем
-        success = await self._send_message(lead["sender_id"], first_message)
+        success = await self._send_message(lead["sender_id"], first_message, fast=True)
         if success:
             await db.mark_user_seen(lead["sender_id"])
             await db.update_lead_status(lead_id, "DIALOG_STARTED")
@@ -462,7 +470,7 @@ class UserClient:
         await db.update_dialog_messages(dialog_id, json.dumps(messages, ensure_ascii=False))
         await db.update_dialog_stage(dialog_id, new_stage)
 
-        success = await self._send_message(lead["sender_id"], first_message)
+        success = await self._send_message(lead["sender_id"], first_message, fast=True)
         if success:
             await db.mark_user_seen(lead["sender_id"])
             await db.update_cold_lead_status(lead_id, "DIALOG_STARTED")

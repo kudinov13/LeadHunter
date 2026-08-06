@@ -156,6 +156,8 @@ async def detect_cold_lead(text: str, message_date: datetime,
         business_type=result.get("business_type"),
         pain=result.get("pain"),
         hook=result.get("hook"),
+        market_price=result.get("market_price"),
+        market_deadline=result.get("market_deadline"),
         reason="cold_ai_classified",
     )
 
