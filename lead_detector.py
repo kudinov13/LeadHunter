@@ -37,6 +37,7 @@ class LeadResult:
     """Результат анализа сообщения."""
     def __init__(self, is_lead: bool, category: str = "NOT_LEAD",
                  task: str = None, budget: str = None, deadline: str = None,
+                 market_price: str = None, market_deadline: str = None,
                  business_type: str = None, pain: str = None, hook: str = None,
                  reason: str = ""):
         self.is_lead = is_lead
@@ -44,6 +45,8 @@ class LeadResult:
         self.task = task
         self.budget = budget
         self.deadline = deadline
+        self.market_price = market_price
+        self.market_deadline = market_deadline
         self.business_type = business_type
         self.pain = pain
         self.hook = hook
@@ -190,5 +193,7 @@ async def detect_lead(text: str, message_date: datetime,
         task=result.get("task"),
         budget=result.get("budget"),
         deadline=result.get("deadline"),
+        market_price=result.get("market_price"),
+        market_deadline=result.get("market_deadline"),
         reason="ai_classified"
     )

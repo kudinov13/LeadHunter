@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS leads (
     task TEXT,
     budget TEXT,
     deadline TEXT,
+    market_price TEXT,
+    market_deadline TEXT,
     status TEXT DEFAULT 'NEW',
     created_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (chat_id) REFERENCES chats(chat_id)
@@ -129,6 +131,7 @@ async def init_db():
         await db.executescript(SCHEMA)
         await _migrate_chats(db)
         await _migrate_messages_log(db)
+        await _migrate_leads(db)
         await db.commit()
 
 
@@ -150,6 +153,16 @@ async def _migrate_messages_log(db):
         columns = {row[1] for row in await cursor.fetchall()}
     if "filter_verdict" not in columns:
         await db.execute("ALTER TABLE messages_log ADD COLUMN filter_verdict TEXT")
+
+
+async def _migrate_leads(db):
+    """Добавляет новые колонки в leads, если их ещё нет."""
+    async with db.execute("PRAGMA table_info(leads)") as cursor:
+        columns = {row[1] for row in await cursor.fetchall()}
+    if "market_price" not in columns:
+        await db.execute("ALTER TABLE leads ADD COLUMN market_price TEXT")
+    if "market_deadline" not in columns:
+        await db.execute("ALTER TABLE leads ADD COLUMN market_deadline TEXT")
 
 
 # === Chats ===
@@ -424,14 +437,15 @@ async def get_cold_outreach_count_today() -> int:
 async def add_lead(chat_id: int, chat_name: str, sender_id: int,
                    sender_name: str, sender_username: str, message_text: str,
                    category: str, task: str = None, budget: str = None,
-                   deadline: str = None) -> int:
+                   deadline: str = None, market_price: str = None,
+                   market_deadline: str = None) -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """INSERT INTO leads (chat_id, chat_name, sender_id, sender_name, sender_username,
-               message_text, category, task, budget, deadline)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               message_text, category, task, budget, deadline, market_price, market_deadline)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (chat_id, chat_name, sender_id, sender_name, sender_username,
-             message_text, category, task, budget, deadline)
+             message_text, category, task, budget, deadline, market_price, market_deadline)
         )
         await db.commit()
         return cursor.lastrowid

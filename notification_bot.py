@@ -487,7 +487,8 @@ class NotificationBot:
     async def notify_lead(self, lead_id: int, chat_name: str, sender_name: str,
                           sender_username: str | None, message_text: str,
                           category: str, task: str = None, budget: str = None,
-                          deadline: str = None, sender_id: int = None,
+                          deadline: str = None, market_price: str = None,
+                          market_deadline: str = None, sender_id: int = None,
                           dialog_id: int = None):
         """Отправка уведомления о лиде владельцу."""
 
@@ -543,9 +544,15 @@ class NotificationBot:
         if task:
             text += f"\n🎯 Задача: {task}\n"
         if budget:
-            text += f"💰 Бюджет: {budget}\n"
+            text += f"💰 Бюджет клиента: {budget}\n"
         if deadline:
-            text += f"⏰ Сроки: {deadline}\n"
+            text += f"⏰ Сроки клиента: {deadline}\n"
+        if market_price or market_deadline:
+            text += "\n📊 Рыночная оценка (совет AI, клиент её не называл):\n"
+            if market_price:
+                text += f"   💵 Рекомендуемая цена: {market_price}\n"
+            if market_deadline:
+                text += f"   ⏱ Рекомендуемый срок: {market_deadline}\n"
 
         await self.bot.send_message(OWNER_TG_ID, text, reply_markup=keyboard)
 

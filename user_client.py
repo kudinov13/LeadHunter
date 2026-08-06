@@ -142,6 +142,8 @@ class UserClient:
             task=result.task,
             budget=result.budget,
             deadline=result.deadline,
+            market_price=result.market_price,
+            market_deadline=result.market_deadline,
         )
 
         logger.info(f"ЛИД #{lead_id} [{result.category}] от {sender_name} в чате {chat_name}")
@@ -159,6 +161,8 @@ class UserClient:
                 task=result.task,
                 budget=result.budget,
                 deadline=result.deadline,
+                market_price=result.market_price,
+                market_deadline=result.market_deadline,
                 sender_id=sender.id,
             )
 
