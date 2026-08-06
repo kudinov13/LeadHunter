@@ -5,7 +5,7 @@ from datetime import datetime
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup,
-                           InlineKeyboardButton)
+                           InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton)
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from config import NOTIF_BOT_TOKEN, OWNER_TG_ID, COLD_OUTREACH_DAILY_LIMIT, TG_BOT_PROXY
@@ -32,7 +32,28 @@ class NotificationBot:
         self.user_client = user_client
         self._register_handlers()
 
+    def _main_keyboard(self) -> ReplyKeyboardMarkup:
+        """Постоянная клавиатура с кнопкой быстрой диагностики."""
+        return ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="🔎 Последнее сообщение"), KeyboardButton(text="📊 Статус")],
+            ],
+            resize_keyboard=True,
+        )
+
     def _register_handlers(self):
+        @self.dp.message(F.text == "🔎 Последнее сообщение")
+        async def btn_lastmsg(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await self._handle_lastmsg(message)
+
+        @self.dp.message(F.text == "📊 Статус")
+        async def btn_status(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await self._handle_status(message)
+
         @self.dp.message(Command("start"))
         async def cmd_start(message: Message):
             if message.from_user.id != OWNER_TG_ID:
@@ -43,13 +64,15 @@ class NotificationBot:
                 "Команды:\n"
                 "/status — статус системы\n"
                 "/chats — список отслеживаемых чатов\n"
+                "/lastmsg — последнее прочитанное сообщение по каждому чату (проверка что бот читает)\n"
                 "/addchat — добавить чат для мониторинга\n"
                 "/import_gis — импорт компаний из 2GIS CSV\n"
                 "/next_gis — следующая 2GIS-компания на проверку\n"
                 "/approve_gis <id> — одобрить и отправить холодное сообщение\n"
                 "/cold_stats — статистика холодного обхода\n"
                 "/warmup_done — завершить прогрев аккаунта\n"
-                "/help — помощь"
+                "/help — помощь",
+                reply_markup=self._main_keyboard(),
             )
 
         @self.dp.message(Command("help"))
@@ -67,6 +90,7 @@ class NotificationBot:
                 "/approve_gis <id> — одобрить и отправить холодное сообщение\n"
                 "/cold_stats — статистика холодного обхода\n"
                 "/warmup_done — завершить прогрев аккаунта\n"
+                "/lastmsg — последнее прочитанное сообщение по каждому чату\n"
                 "/stats — статистика лидов\n\n"
                 "Когда приходит лид — нажмите «Написать клиенту» чтобы AI начал диалог.\n"
                 "Когда клиент опишет задачу — укажите цену сообщением.\n"
@@ -77,23 +101,7 @@ class NotificationBot:
         async def cmd_status(message: Message):
             if message.from_user.id != OWNER_TG_ID:
                 return
-            hourly = await db.get_hourly_actions_count()
-            daily = await db.get_daily_actions_count()
-            cold_daily = await db.get_cold_outreach_count_today()
-            chats = await db.get_monitored_chats()
-            warmup = self.user_client.anti_ban.is_warmup if self.user_client else "?"
-            running = self.user_client.is_running if self.user_client else False
-
-            status_text = (
-                f"📊 Статус системы\n\n"
-                f"• Клиент: {'✅ Запущен' if running else '❌ Остановлен'}\n"
-                f"• Прогрев: {'⏳ Активен' if warmup else '✅ Завершён'}\n"
-                f"• Чатов отслеживается: {len(chats)}\n"
-                f"• Действий за час: {hourly}\n"
-                f"• Действий за день: {daily}\n"
-                f"• Холодных сообщений сегодня: {cold_daily}/{COLD_OUTREACH_DAILY_LIMIT}\n"
-            )
-            await message.answer(status_text)
+            await self._handle_status(message)
 
         @self.dp.message(Command("chats"))
         async def cmd_chats(message: Message):
@@ -145,6 +153,14 @@ class NotificationBot:
                 await message.answer("✅ Прогрев аккаунта завершён. Отправка сообщений разблокирована.")
             else:
                 await message.answer("❌ Клиент не инициализирован")
+
+        @self.dp.message(Command("lastmsg"))
+        async def cmd_lastmsg(message: Message):
+            """Диагностика: последнее прочитанное сообщение в каждом чате + вердикт фильтра.
+            Позволяет проверить, что бот реально читает чаты и почему сообщение не стало лидом."""
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await self._handle_lastmsg(message)
 
         @self.dp.message(Command("stats"))
         async def cmd_stats(message: Message):
@@ -373,6 +389,71 @@ class NotificationBot:
             except Exception as e:
                 logger.error(f"Ошибка approve_gis: {e}")
                 await message.answer(f"❌ Ошибка: {e}")
+
+    async def _handle_status(self, message: Message):
+        hourly = await db.get_hourly_actions_count()
+        daily = await db.get_daily_actions_count()
+        cold_daily = await db.get_cold_outreach_count_today()
+        chats = await db.get_monitored_chats()
+        warmup = self.user_client.anti_ban.is_warmup if self.user_client else "?"
+        running = self.user_client.is_running if self.user_client else False
+
+        status_text = (
+            f"📊 Статус системы\n\n"
+            f"• Клиент: {'✅ Запущен' if running else '❌ Остановлен'}\n"
+            f"• Прогрев: {'⏳ Активен' if warmup else '✅ Завершён'}\n"
+            f"• Чатов отслеживается: {len(chats)}\n"
+            f"• Действий за час: {hourly}\n"
+            f"• Действий за день: {daily}\n"
+            f"• Холодных сообщений сегодня: {cold_daily}/{COLD_OUTREACH_DAILY_LIMIT}\n"
+        )
+        await message.answer(status_text)
+
+    async def _handle_lastmsg(self, message: Message):
+        """Диагностика: последнее прочитанное сообщение в каждом чате + вердикт фильтра.
+        Позволяет проверить, что бот реально читает чаты и почему сообщение не стало лидом."""
+        rows = await db.get_last_messages_per_monitored_chat()
+        if not rows:
+            await message.answer("Нет отслеживаемых чатов. Добавьте через /addchat")
+            return
+
+        verdict_labels = {
+            "level0_filtered": "🗑 отсеяно (возраст/длина/бот/спам)",
+            "level1_no_keywords": "🗑 нет ключевых слов",
+            "no_cold_signals": "🗑 нет холодных сигналов",
+            "ai_error": "⚠️ ошибка AI-классификации",
+            "ai_not_lead": "➖ AI: не лид",
+            "ai_not_cold_lead": "➖ AI: не холодный лид",
+        }
+
+        text = "🔎 Последнее прочитанное сообщение по чатам:\n\n"
+        for r in rows:
+            chat_name = r["chat_name"] or str(r["chat_id"])
+            if not r.get("created_at"):
+                text += f"📍 {chat_name}\n   ещё не читал ни одного сообщения\n\n"
+                continue
+
+            verdict = r.get("filter_verdict") or "⏳ обрабатывается / устарело"
+            if verdict.startswith("lead_"):
+                label = f"🔥 ЛИД ({verdict[5:]})"
+            elif verdict.startswith("cold_"):
+                label = f"❄️ холодный лид ({verdict[5:]})"
+            else:
+                base = verdict.split("|")[0]
+                label = verdict_labels.get(base, verdict)
+
+            when = r["created_at"]
+            msg_preview = (r.get("message_text") or "")[:200]
+            text += (
+                f"📍 {chat_name}\n"
+                f"   🕒 {when}\n"
+                f"   👤 {r.get('sender_name') or '?'}\n"
+                f"   💬 {msg_preview}\n"
+                f"   ➜ {label}\n\n"
+            )
+
+        for chunk_start in range(0, len(text), 3500):
+            await message.answer(text[chunk_start:chunk_start + 3500])
 
     async def notify_cold_lead(self, lead_id: int, chat_name: str, sender_name: str,
                                sender_username: str | None, message_text: str,

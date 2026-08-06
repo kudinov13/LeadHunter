@@ -52,16 +52,14 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # "auto/claude-opus", "auto" (любая модель)
 # Groq: llama-3.3-70b-versatile (качество), llama-3.1-8b-instant (быстро)
 # Kiro: kr/claude-sonnet-4.5 (Claude Sonnet 4.5 через Kiro)
-DIALOG_AI_PROVIDER = "omniroute"
-DIALOG_MODEL = "kr/claude-sonnet-4.5"
+DIALOG_AI_PROVIDER = os.getenv("DIALOG_AI_PROVIDER", "omniroute")
+DIALOG_MODEL = os.getenv("DIALOG_MODEL", "auto/best-chat")
 # Модели для классификации (быстрая модель)
-# OmniRoute работает, но The Old LLM заблокирован по IP сервера.
-# Используем Kiro Claude Sonnet 4.5 - рабочая модель через прокси.
-CLASSIFY_AI_PROVIDER = "omniroute"
-CLASSIFY_MODEL = "kr/claude-sonnet-4.5"
+CLASSIFY_AI_PROVIDER = os.getenv("CLASSIFY_AI_PROVIDER", "omniroute")
+CLASSIFY_MODEL = os.getenv("CLASSIFY_MODEL", "auto")
 # Модель для генерации рассылок (по умолчанию как для диалогов)
-BROADCAST_AI_PROVIDER = DIALOG_AI_PROVIDER
-BROADCAST_MODEL = DIALOG_MODEL
+BROADCAST_AI_PROVIDER = os.getenv("BROADCAST_AI_PROVIDER", DIALOG_AI_PROVIDER)
+BROADCAST_MODEL = os.getenv("BROADCAST_MODEL", DIALOG_MODEL)
 
 # === Anti-Ban Settings ===
 ANTI_BAN_MIN_DELAY = int(os.getenv("ANTI_BAN_MIN_DELAY", "30"))
@@ -251,6 +249,13 @@ LEAD_KEYWORDS = [
     "автоматизация", "парсер", "нужен скрипт",
     "доработать сайт", "доработать приложение", "исправить баги",
     "поддержка сайта", "поддержка приложения",
+    "посоветуйте разработчика", "посоветуйте программиста",
+    "порекомендуйте разработчика", "посоветуйте студию",
+    "кто делает сайты", "кто делает ботов", "кто пишет ботов",
+    "кто занимается сайтами", "кто занимается ботами",
+    "кто занимается разработкой", "нужен айтишник", "ищу айтишника",
+    "написать бота", "написать скрипт", "написать парсер",
+    "доработать бота", "починить сайт", "починить бота",
     # English keywords
     "need developer", "looking for developer", "hire developer",
     "need a developer", "looking for a developer", "hiring developer",

@@ -130,18 +130,14 @@ async def detect_cold_lead(text: str, message_date: datetime,
     # Уровень 2: AI-классификация холодного лидера
     logger.info(f"Холодный сигнал прошёл L1, отправляю на AI: {text[:80]}...")
     try:
-        client = ai_engine._get_client(ai_engine.CLASSIFY_AI_PROVIDER)
-        kwargs = {
-            "model": ai_engine.CLASSIFY_MODEL,
-            "messages": [
+        content = await ai_engine._chat_with_fallback(
+            ai_engine.CLASSIFY_AI_PROVIDER, ai_engine.CLASSIFY_MODEL,
+            [
                 {"role": "system", "content": COLD_CLASSIFY_PROMPT},
                 {"role": "user", "content": text},
             ],
-            "temperature": 0.2,
-            "max_tokens": 300,
-        }
-        response = await client.chat.completions.create(**kwargs)
-        content = response.choices[0].message.content
+            temperature=0.2, max_tokens=300,
+        )
         result = ai_engine._extract_json(content)
     except Exception as e:
         logger.error(f"Ошибка холодной классификации: {e}")

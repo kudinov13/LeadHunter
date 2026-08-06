@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS messages_log (
     message_text TEXT,
     message_id INTEGER NOT NULL,
     direction TEXT NOT NULL,
+    filter_verdict TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -544,6 +545,40 @@ async def log_message(chat_id: int, sender_id: int, sender_name: str,
             (chat_id, sender_id, sender_name, message_text, message_id, direction)
         )
         await db.commit()
+
+
+async def update_message_verdict(chat_id: int, message_id: int, verdict: str):
+    """Записывает вердикт фильтрации (level0_filtered/ai_error/lead_HOT/cold_...) для диагностики."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """UPDATE messages_log SET filter_verdict = ?
+               WHERE chat_id = ? AND message_id = ? AND direction = 'incoming'""",
+            (verdict, chat_id, message_id)
+        )
+        await db.commit()
+
+
+async def get_last_messages_per_monitored_chat() -> list[dict]:
+    """Последнее входящее сообщение по каждому отслеживаемому чату — для диагностики
+    (проверить, что бот реально читает чат и как классифицировал последнее сообщение)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT c.chat_id, c.chat_name, ml.message_text, ml.sender_name,
+                   ml.filter_verdict, ml.created_at
+            FROM chats c
+            LEFT JOIN messages_log ml ON ml.id = (
+                SELECT id FROM messages_log
+                WHERE chat_id = c.chat_id AND direction = 'incoming'
+                ORDER BY id DESC LIMIT 1
+            )
+            WHERE c.is_monitored = 1
+            ORDER BY c.chat_name
+            """
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
 
 
 # === Anti-ban stats ===

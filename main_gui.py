@@ -16,26 +16,27 @@ import os
 import re
 import sys
 import threading
+import time
 import urllib.request
 import urllib.error
 import tkinter as tk
 from tkinter import ttk, messagebox
+
+# .env и gui.log лежат рядом с exe (или со скриптом)
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("gui.log", encoding="utf-8"),
+        logging.FileHandler(os.path.join(BASE_DIR, "gui.log"), encoding="utf-8"),
     ],
 )
 logger = logging.getLogger("main_gui")
-
-# .env лежит рядом с exe (или со скриптом)
-if getattr(sys, "frozen", False):
-    BASE_DIR = os.path.dirname(sys.executable)
-else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 from dotenv import load_dotenv
 load_dotenv(os.path.join(BASE_DIR, ".env"))
@@ -55,7 +56,7 @@ class ServerAPI:
         self.token = token
 
     def _request(self, method: str, path: str, payload: dict | None = None,
-                 timeout: int = 90) -> dict:
+                 timeout: int = 90, retries: int = 2) -> dict:
         url = f"{self.base_url}{path}"
         data = None
         headers = {"Content-Type": "application/json"}
@@ -63,9 +64,20 @@ class ServerAPI:
             headers["X-API-Token"] = self.token
         if payload is not None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers=headers, method=method)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        last_err = None
+        for attempt in range(retries + 1):
+            req = urllib.request.Request(url, data=data, headers=headers, method=method)
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError:
+                raise  # 401 и прочие ответы сервера не ретраим
+            except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+                last_err = e
+                logger.warning(f"{method} {path}: попытка {attempt + 1} не удалась: {e}")
+                if attempt < retries:
+                    time.sleep(2)
+        raise last_err
 
     def get_chats(self) -> list[dict]:
         return self._request("GET", "/api/chats")["chats"]
@@ -74,11 +86,13 @@ class ServerAPI:
         return self._request("POST", "/api/chats", chat_data).get("success", False)
 
     def sync_dialogs(self) -> int:
-        return self._request("POST", "/api/sync_dialogs", {}, timeout=180).get("count", 0)
+        # retries=0: повтор мог бы дважды дёргать Telegram
+        return self._request("POST", "/api/sync_dialogs", {},
+                             timeout=300, retries=0).get("count", 0)
 
     def preview_broadcast(self, chat_id: int) -> dict | None:
         return self._request("POST", "/api/preview_broadcast",
-                             {"chat_id": chat_id}, timeout=180).get("result")
+                             {"chat_id": chat_id}, timeout=300, retries=0).get("result")
 
     def get_settings(self) -> dict:
         return self._request("GET", "/api/settings")
@@ -87,7 +101,7 @@ class ServerAPI:
         return self._request("POST", "/api/settings", settings).get("success", False)
 
     def get_status(self) -> dict:
-        return self._request("GET", "/api/status", timeout=15)
+        return self._request("GET", "/api/status", timeout=30)
 
 
 class App:
@@ -297,6 +311,15 @@ class App:
                 logger.error(f"Сервер недоступен: {e}")
                 self.root.after(0, lambda: (on_error or self._default_error)(err))
                 return
+            except (TimeoutError, ConnectionError, OSError) as e:
+                err = Exception(
+                    f"Сервер {SERVER_URL} не ответил вовремя.\n"
+                    f"Попробуйте ещё раз через несколько секунд\n"
+                    f"(кнопка «⟳ Перечитать данные с сервера»).\n\nДетали: {e}"
+                )
+                logger.error(f"Таймаут/обрыв связи: {e}")
+                self.root.after(0, lambda: (on_error or self._default_error)(err))
+                return
             except Exception as e:
                 logger.error(f"Ошибка фоновой операции: {e}", exc_info=True)
                 self.root.after(0, lambda: (on_error or self._default_error)(e))
@@ -324,6 +347,7 @@ class App:
             self._apply_chats(chats)
             self._set_controls_enabled(True)
             running = "✅ работает" if status.get("running") else "⚠️ Telegram-клиент остановлен"
+            logger.info(f"Подключено к серверу, чатов в списке: {len(chats)}")
             self.status_var.set(
                 f"Сервер {SERVER_URL}: {running} | чатов отслеживается: "
                 f"{status.get('monitored_chats', 0)} | действий сегодня: "
@@ -331,16 +355,17 @@ class App:
             )
 
         def err(e):
-            self.status_var.set(f"❌ Сервер {SERVER_URL} недоступен")
+            self.status_var.set(f"❌ Сервер {SERVER_URL} недоступен — нажмите «⟳ Перечитать данные с сервера»")
             messagebox.showerror(
                 "Нет связи с сервером",
                 f"{e}\n\nПроверьте:\n"
                 f"• SERVER_URL и API_TOKEN в файле .env рядом с программой\n"
                 f"• что сервис lead-hunter запущен на сервере\n"
-                f"• интернет-соединение"
+                f"• интернет-соединение\n\n"
+                f"Потом нажмите «⟳ Перечитать данные с сервера»."
             )
-            # Разрешаем повторить попытку кнопкой
-            self.reload_btn.configure(state="normal")
+            # Разрешаем повторить попытку кнопками
+            self._set_controls_enabled(True)
 
         self.run_bg(load, on_done=done, on_error=err)
 

@@ -113,11 +113,17 @@ class UserClient:
         if not result.is_lead:
             if result.reason.startswith("level"):
                 logger.debug(f"L0/L1 отсеял: {text[:50]}...")
+            verdict = result.reason
             # Пробуем найти холодного лида, если включено
             if COLD_LEAD_ENABLED:
                 cold_result = await detect_cold_lead(text, message.date, sender_is_bot)
                 if cold_result.is_lead:
+                    await db.update_message_verdict(
+                        event.chat_id, message.id, f"cold_{cold_result.category}")
                     await self._process_cold_lead(event, cold_result, text)
+                    return
+                verdict = f"{verdict}|cold:{cold_result.reason}"
+            await db.update_message_verdict(event.chat_id, message.id, verdict)
             return
 
         # Лид найден
@@ -139,6 +145,7 @@ class UserClient:
         )
 
         logger.info(f"ЛИД #{lead_id} [{result.category}] от {sender_name} в чате {chat_name}")
+        await db.update_message_verdict(event.chat_id, message.id, f"lead_{result.category}")
 
         # Уведомление владельцу через бота
         if self.notification_callback:

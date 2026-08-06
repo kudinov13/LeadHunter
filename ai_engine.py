@@ -13,6 +13,7 @@ from config import (OMNIROUTE_API_KEY, OMNIROUTE_BASE_URL,
                     CLASSIFY_AI_PROVIDER, CLASSIFY_MODEL,
                     BROADCAST_AI_PROVIDER, BROADCAST_MODEL,
                     CLASSIFY_SYSTEM_PROMPT, DIALOG_SYSTEM_PROMPT,
+                    COLD_CLASSIFY_PROMPT,
                     BROADCAST_PROMPT, NO_RULES_MARKER,
                     DEVELOPER_INFO, DEVELOPER_GENDER)
 
@@ -45,31 +46,63 @@ _JSON_MODELS = {
 _clients: dict[str, AsyncOpenAI] = {}
 
 
-def _extract_json(text: str) -> dict:
-    """Извлекает JSON из текста ответа (для моделей без response_format)."""
+def _extract_json(text: str | None) -> dict:
+    """Извлекает JSON из текста ответа (для моделей без response_format).
+
+    Устойчив к: None, reasoning-блокам, обрезанному JSON (max_tokens),
+    JSON внутри code-блоков и лишнему тексту вокруг.
+    """
+    import re
+
+    _default = {"category": "NOT_LEAD", "task": "", "budget": "", "deadline": ""}
+
+    if not text:
+        logger.warning("Пустой ответ AI (content=None)")
+        return dict(_default)
+
+    # Убираем reasoning-блоки <think>...</think>
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
     # Если текст уже валидный JSON
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
     # Ищем JSON в блоке кода ```json ... ```
-    import re
     match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
     if match:
         try:
             return json.loads(match.group(1))
         except json.JSONDecodeError:
             pass
-    # Ищем первый { ... } блок
+    # Ищем от первой { до последней } (JSON с вложенностью)
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            pass
+    # Ищем первый плоский { ... } блок
     match = re.search(r'\{[^{}]*\}', text, re.DOTALL)
     if match:
         try:
             return json.loads(match.group(0))
         except json.JSONDecodeError:
             pass
-    # Если не удалось — возвращаем NOT_LEAD
+
+    # Последний рубеж: JSON обрезан лимитом токенов — вытаскиваем поля регэкспами,
+    # чтобы не потерять лид из-за оборванного ответа
+    field_re = re.compile(r'"(category|task|budget|deadline|business_type|pain|hook)"'
+                          r'\s*:\s*"([^"]*)', re.DOTALL)
+    fields = {m.group(1): m.group(2).strip() for m in field_re.finditer(text)}
+    if fields.get("category"):
+        logger.warning(f"JSON обрезан, восстановил поля регэкспом: {fields.get('category')}")
+        result = dict(_default)
+        result.update(fields)
+        return result
+
     logger.warning(f"Не удалось извлечь JSON из ответа: {text[:200]}")
-    return {"category": "NOT_LEAD", "task": "", "budget": "", "deadline": ""}
+    return dict(_default)
 
 
 def _get_client(provider: str) -> AsyncOpenAI:
@@ -117,13 +150,22 @@ def _get_client(provider: str) -> AsyncOpenAI:
     return _clients[provider]
 
 
+_RETRYABLE_CODES = ["429", "502", "503", "rate limit", "too many requests",
+                     "all_accounts_inactive", "service temporarily unavailable"]
+
+# response_format json_object не поддерживается Groq для некоторых моделей —
+# убираем его при кросс-провайдерном fallback, чтобы не сломать запрос.
+_GROQ_FALLBACK_MODEL = "llama-3.3-70b-versatile"
+
+
 async def _chat_with_fallback(
     provider: str,
     model: str,
     messages: list[dict],
     **kwargs
 ) -> str | None:
-    """Отправляет запрос к AI с fallback на auto при ошибке."""
+    """Отправляет запрос к AI с fallback: сначала auto на том же провайдере,
+    затем (если настроен) кросс-провайдерный fallback на Groq."""
     client = _get_client(provider)
     try:
         response = await client.chat.completions.create(
@@ -132,16 +174,28 @@ async def _chat_with_fallback(
         return response.choices[0].message.content
     except Exception as e:
         error_text = str(e).lower()
-        if any(code in error_text for code in ["429", "502", "503", "rate limit", "too many requests"]):
-            logger.warning(f"Модель {model} недоступна ({e}), пробуем auto fallback")
-            try:
-                response = await client.chat.completions.create(
-                    model="auto", messages=messages, **kwargs
-                )
-                return response.choices[0].message.content
-            except Exception as e2:
-                logger.error(f"Fallback auto тоже не сработал: {e2}")
-        raise
+        if not any(code in error_text for code in _RETRYABLE_CODES):
+            raise
+        logger.warning(f"Модель {model} недоступна ({e}), пробуем auto fallback")
+        try:
+            response = await client.chat.completions.create(
+                model="auto", messages=messages, **kwargs
+            )
+            return response.choices[0].message.content
+        except Exception as e2:
+            logger.error(f"Fallback auto тоже не сработал: {e2}")
+            if provider != "groq" and GROQ_API_KEY:
+                logger.warning("Пробуем кросс-провайдерный fallback на Groq")
+                try:
+                    groq_client = _get_client("groq")
+                    groq_kwargs = {k: v for k, v in kwargs.items() if k != "response_format"}
+                    response = await groq_client.chat.completions.create(
+                        model=_GROQ_FALLBACK_MODEL, messages=messages, **groq_kwargs
+                    )
+                    return response.choices[0].message.content
+                except Exception as e3:
+                    logger.error(f"Fallback на Groq тоже не сработал: {e3}")
+            raise
 
 
 async def classify_message(message_text: str) -> dict | None:
