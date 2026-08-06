@@ -9,7 +9,7 @@ import logging
 import httpx
 from openai import AsyncOpenAI
 from config import (OMNIROUTE_API_KEY, OMNIROUTE_BASE_URL,
-                    GROQ_API_KEY, GROQ_API_KEY_2, OPENROUTER_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY,
+                    GROQ_API_KEY, GROQ_API_KEY_2, OPENROUTER_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY,
                     AI_HTTP_PROXY,
                     DIALOG_AI_PROVIDER, DIALOG_MODEL,
                     CLASSIFY_AI_PROVIDER, CLASSIFY_MODEL,
@@ -38,6 +38,7 @@ GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 
 # Модели, которые поддерживают response_format json_object
 _JSON_MODELS = {
@@ -179,6 +180,13 @@ def _get_client(provider: str) -> AsyncOpenAI:
                 base_url=ANTHROPIC_BASE_URL,
                 http_client=_proxied_http_client()
             )
+        elif provider == "gemini":
+            if not GEMINI_API_KEY:
+                raise ValueError("GEMINI_API_KEY не настроен. Получите бесплатно на ai.google.dev")
+            _clients[provider] = AsyncOpenAI(
+                api_key=GEMINI_API_KEY,
+                base_url=GEMINI_BASE_URL,
+            )
         else:
             raise ValueError(f"Неизвестный AI провайдер: {provider}")
     return _clients[provider]
@@ -250,9 +258,26 @@ async def _chat_with_fallback(
             response = await client.chat.completions.create(
                 model="auto", messages=messages, **kwargs
             )
+            if not response.choices:
+                logger.warning(f"AI вернул пустой choices для модели auto")
+                return None
             return response.choices[0].message.content
         except Exception as e2:
             logger.error(f"Fallback auto тоже не сработал: {e2}")
+            # Пробуем Gemini как бесплатный fallback без лимитов
+            if provider != "gemini" and GEMINI_API_KEY:
+                logger.warning("Пробуем fallback на Google Gemini")
+                try:
+                    gemini_client = _get_client("gemini")
+                    gemini_kwargs = {k: v for k, v in kwargs.items() if k != "response_format"}
+                    response = await gemini_client.chat.completions.create(
+                        model="gemini-2.0-flash", messages=messages, **gemini_kwargs
+                    )
+                    if response.choices:
+                        return response.choices[0].message.content
+                except Exception as e_gem:
+                    logger.error(f"Fallback на Gemini тоже не сработал: {e_gem}")
+            # Последний рубеж: Groq
             if provider != "groq" and _GROQ_KEYS:
                 logger.warning("Пробуем кросс-провайдерный fallback на Groq")
                 try:
@@ -261,7 +286,8 @@ async def _chat_with_fallback(
                     response = await groq_client.chat.completions.create(
                         model=_GROQ_FALLBACK_MODEL, messages=messages, **groq_kwargs
                     )
-                    return response.choices[0].message.content
+                    if response.choices:
+                        return response.choices[0].message.content
                 except Exception as e3:
                     logger.error(f"Fallback на Groq тоже не сработал: {e3}")
             raise

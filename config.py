@@ -52,6 +52,8 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+# Google Gemini — БЕСПЛАТНО, 1500 запросов/день, 1M токенов/мин. Регистрация: ai.google.dev
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # Модели для диалогов (по умолчанию OmniRoute — бесплатно, лучшие модели)
 # OmniRoute: "auto/claude-sonnet" (гарантированно Claude Sonnet + fallback),
