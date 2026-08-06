@@ -177,6 +177,16 @@ async def _chat_with_fallback(
         if not any(code in error_text for code in _RETRYABLE_CODES):
             raise
         logger.warning(f"Модель {model} недоступна ({e}), пробуем auto fallback")
+        if provider == "groq":
+            # У Groq нет модели "auto" — сразу пробуем резервную модель на том же провайдере
+            try:
+                response = await client.chat.completions.create(
+                    model=_GROQ_FALLBACK_MODEL, messages=messages, **kwargs
+                )
+                return response.choices[0].message.content
+            except Exception as e2:
+                logger.error(f"Резервная модель Groq тоже не сработала: {e2}")
+                raise
         try:
             response = await client.chat.completions.create(
                 model="auto", messages=messages, **kwargs
