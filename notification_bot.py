@@ -83,6 +83,7 @@ class NotificationBot:
             keyboard=[
                 [KeyboardButton(text="📊 A/B статистика")],
                 [KeyboardButton(text="🔎 Последнее сообщение")],
+                [KeyboardButton(text="🔎 Статус поиска")],
                 [KeyboardButton(text="⬅️ Назад")],
             ],
             resize_keyboard=True,
@@ -197,6 +198,12 @@ class NotificationBot:
             if message.from_user.id != OWNER_TG_ID:
                 return
             await self._handle_chats_list(message)
+
+        @self.dp.message(F.text == "🔎 Статус поиска")
+        async def btn_search_status(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await self._handle_search_status(message)
 
         @self.dp.message(Command("start"))
         async def cmd_start(message: Message):
@@ -700,8 +707,6 @@ class NotificationBot:
             await message.answer("❌ Клиент не инициализирован")
             return
 
-        await message.answer("🔍 Ищу чаты по ключевым словам...")
-
         import chat_finder
         import asyncio as _asyncio
         from config import CHAT_JOIN_DAILY_LIMIT
@@ -709,11 +714,38 @@ class NotificationBot:
         joined_today = await db.get_chat_joins_today()
         remaining = CHAT_JOIN_DAILY_LIMIT - joined_today
         await message.answer(
-            f"📊 Лимит вступлений сегодня: {joined_today}/{CHAT_JOIN_DAILY_LIMIT} "
-            f"(осталось {remaining})"
+            f"� Запускаю поиск чатов...\n"
+            f"�� Лимит вступлений сегодня: {joined_today}/{CHAT_JOIN_DAILY_LIMIT} "
+            f"(осталось {remaining})\n\n"
+            f"⏳ Поиск идёт в фоне. Нажмите «🔎 Статус поиска» чтобы проверить прогресс."
         )
 
-        good_chats = await chat_finder.search_and_scan(self.user_client.client)
+        # Live-прогресс через редактирование сообщения
+        progress_msg = None
+
+        async def progress_cb(status: dict):
+            nonlocal progress_msg
+            text = (
+                f"🔍 Поиск чатов...\n\n"
+                f"📊 Найдено: {status['total_found']}\n"
+                f"✅ Просмотрено: {status['scanned']}\n"
+                f"🔥 Одобрено: {status['approved']}\n"
+                f"❌ Отклонено: {status['rejected']}\n"
+                f"👀 Сейчас: @{status['current_chat'] or '—'}\n"
+                f"🕐 Начат: {status['started_at']}"
+            )
+            try:
+                if progress_msg is None:
+                    progress_msg = await message.answer(text)
+                else:
+                    await progress_msg.edit_text(text)
+            except Exception:
+                pass  # не падать если Telegram не даёт редактировать
+
+        good_chats = await chat_finder.search_and_scan(
+            self.user_client.client,
+            progress_callback=progress_cb,
+        )
 
         if not good_chats:
             await message.answer("📭 Бизнес-чатов не найдено. Попробуйте позже или измените ключевые слова.")
@@ -755,6 +787,24 @@ class NotificationBot:
             ]])
             await message.answer(text, reply_markup=keyboard)
             await _asyncio.sleep(0.5)
+
+    async def _handle_search_status(self, message: Message):
+        """Текущий статус поиска чатов."""
+        import chat_finder
+        s = chat_finder.get_search_status()
+        running = "🔄 Да" if s["is_running"] else "✅ Завершён"
+        text = (
+            f"🔎 Статус поиска чатов\n\n"
+            f"🏃 Идёт: {running}\n"
+            f"🕐 Начат: {s['started_at'] or '—'}\n\n"
+            f"📊 Найдено всего: {s['total_found']}\n"
+            f"✅ Просмотрено: {s['scanned']}\n"
+            f"🔥 Одобрено: {s['approved']}\n"
+            f"❌ Отклонено: {s['rejected']}\n\n"
+            f"👀 Последний чат: @{s['current_chat'] or '—'}\n"
+            f"📝 Название: {s['current_chat_title'] or '—'}"
+        )
+        await message.answer(text)
 
     async def _handle_chats_list(self, message: Message):
         """Список отслеживаемых чатов."""

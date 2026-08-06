@@ -34,6 +34,23 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+# Live-статус поиска для проверки извне
+_search_status = {
+    "total_found": 0,
+    "scanned": 0,
+    "approved": 0,
+    "rejected": 0,
+    "current_chat": "",
+    "current_chat_title": "",
+    "is_running": False,
+    "started_at": "",
+}
+
+
+def get_search_status() -> dict:
+    """Возвращает текущий статус поиска чатов."""
+    return dict(_search_status)
+
 # Ключевые слова для отсеивания мусорных чатов
 _JUNK_KEYWORDS = [
     "казино", "ставки", "букмекер", "порно", "18+", "xxx", "секс",
@@ -177,22 +194,52 @@ async def scan_chat_quality(client, chat: dict) -> dict:
     return {"is_business": False, "category": "unknown", "reason": "no_signal", "sample_texts": sample_texts}
 
 
-async def search_and_scan(client, keywords: list[str] = None) -> list[dict]:
-    """Полный цикл: поиск + сканирование. Возвращает только бизнес-чаты."""
+async def search_and_scan(client, keywords: list[str] = None,
+                          progress_callback=None) -> list[dict]:
+    """Полный цикл: поиск + сканирование. Возвращает только бизнес-чаты.
+
+    progress_callback: async функция, вызывается с dict статуса после каждого чата.
+    """
+    from datetime import datetime
+    _search_status.update({
+        "total_found": 0, "scanned": 0, "approved": 0, "rejected": 0,
+        "current_chat": "", "current_chat_title": "",
+        "is_running": True, "started_at": datetime.now().strftime("%H:%M:%S"),
+    })
+
     chats = await search_chats(client, keywords)
+    _search_status["total_found"] = len(chats)
     logger.info(f"Найдено {len(chats)} чатов, начинаем сканирование...")
+
+    if progress_callback:
+        await progress_callback(dict(_search_status))
 
     good_chats = []
     for chat in chats:
+        _search_status["current_chat"] = chat["username"]
+        _search_status["current_chat_title"] = chat["title"]
+
+        if progress_callback:
+            await progress_callback(dict(_search_status))
+
         scan = await scan_chat_quality(client, chat)
         chat["scan"] = scan
+        _search_status["scanned"] += 1
+
         if scan["is_business"]:
             good_chats.append(chat)
+            _search_status["approved"] += 1
             logger.info(f"✅ @{chat['username']} — {scan['category']} ({scan['reason']})")
         else:
+            _search_status["rejected"] += 1
             logger.info(f"❌ @{chat['username']} — {scan['category']} ({scan['reason']})")
+
+        if progress_callback:
+            await progress_callback(dict(_search_status))
+
         await asyncio.sleep(2)  # анти-бан задержка
 
+    _search_status["is_running"] = False
     logger.info(f"Сканирование завершено: {len(good_chats)} бизнес-чатов из {len(chats)}")
     return good_chats
 
