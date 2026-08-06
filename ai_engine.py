@@ -205,6 +205,9 @@ async def _chat_with_fallback(
         response = await client.chat.completions.create(
             model=model, messages=messages, **kwargs
         )
+        if not response.choices:
+            logger.warning(f"AI вернул пустой choices для модели {model}")
+            return None
         return response.choices[0].message.content
     except Exception as e:
         error_text = str(e).lower()
