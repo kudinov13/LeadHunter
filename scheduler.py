@@ -1,4 +1,5 @@
 """Планировщик рассылки сообщений по чатам по расписанию (cron)."""
+import asyncio
 import json
 import random
 import re
@@ -7,7 +8,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from config import SCHEDULER_TIMEZONE
+from config import SCHEDULER_TIMEZONE, FOLLOWUP_ENABLED, FOLLOWUP_HOURS_THRESHOLD, FOLLOWUP_MAX, FOLLOWUP_CHECK_INTERVAL_MIN
 import database as db
 import ai_engine
 
@@ -50,6 +51,19 @@ class MessageScheduler:
         await self._load_jobs()
         self.scheduler.start()
         logger.info(f"Планировщик запущен (TZ: {SCHEDULER_TIMEZONE})")
+
+        if FOLLOWUP_ENABLED:
+            self.scheduler.add_job(
+                self._check_followups,
+                trigger="interval",
+                minutes=FOLLOWUP_CHECK_INTERVAL_MIN,
+                id="followup_checker",
+                name="Follow-up проверка",
+                misfire_grace_time=300,
+                coalesce=True,
+            )
+            logger.info(f"Follow-up checker: каждые {FOLLOWUP_CHECK_INTERVAL_MIN} мин, "
+                        f"порог {FOLLOWUP_HOURS_THRESHOLD}ч, макс {FOLLOWUP_MAX}")
 
     async def stop(self):
         self.scheduler.shutdown(wait=False)
@@ -214,6 +228,30 @@ class MessageScheduler:
             await self._notify_owner(
                 f"❌ Рассылка в «{chat_name}» не отправлена: анти-бан лимиты или ошибка отправки."
             )
+
+    async def _check_followups(self):
+        """Проверяет stale-диалоги и отправляет follow-up сообщения."""
+        if not self.user_client:
+            return
+
+        stale = await db.get_stale_dialogs(FOLLOWUP_HOURS_THRESHOLD, FOLLOWUP_MAX)
+        if not stale:
+            return
+
+        logger.info(f"Follow-up: найдено {len(stale)} stale-диалогов")
+
+        for dialog in stale:
+            try:
+                success = await self.user_client.send_followup(dialog)
+                if success and self.broadcast_notify_callback:
+                    await self.broadcast_notify_callback(
+                        f"📨 Follow-up отправлен для диалога #{dialog['id']} "
+                        f"с {dialog.get('sender_name', 'клиентом')} "
+                        f"(напоминание #{dialog.get('followup_count', 0) + 1}/{FOLLOWUP_MAX})"
+                    )
+                await asyncio.sleep(5)
+            except Exception as e:
+                logger.error(f"Follow-up ошибка для диалога #{dialog['id']}: {e}", exc_info=True)
 
     async def preview_broadcast(self, chat_id: int) -> dict | None:
         """Генерация текста рассылки БЕЗ отправки (кнопка «Тест» в GUI)."""

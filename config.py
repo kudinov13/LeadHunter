@@ -80,6 +80,12 @@ DB_PATH = BASE_DIR / os.getenv("DB_PATH", "data/bot.db")
 # === Scheduler ===
 SCHEDULER_TIMEZONE = os.getenv("SCHEDULER_TIMEZONE", "Asia/Novosibirsk")
 
+# === Follow-up (дожим) ===
+FOLLOWUP_ENABLED = os.getenv("FOLLOWUP_ENABLED", "true").lower() in ("1", "true", "yes")
+FOLLOWUP_HOURS_THRESHOLD = int(os.getenv("FOLLOWUP_HOURS_THRESHOLD", "24"))
+FOLLOWUP_MAX = int(os.getenv("FOLLOWUP_MAX", "2"))
+FOLLOWUP_CHECK_INTERVAL_MIN = int(os.getenv("FOLLOWUP_CHECK_INTERVAL_MIN", "30"))
+
 # === Server Sync (для GUI) ===
 SERVER_URL = os.getenv("SERVER_URL", "").rstrip("/")
 # Токен авторизации HTTP API (одинаковый на сервере и в GUI)

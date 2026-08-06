@@ -7,7 +7,7 @@ from telethon import TelegramClient, events, connection
 from telethon.tl.custom import Message
 from config import (TG_API_ID, TG_API_HASH, TG_PHONE, TG_SESSION_NAME,
                     TG_MTPROTO_HOST, TG_MTPROTO_PORT, TG_MTPROTO_SECRET,
-                    COLD_LEAD_ENABLED)
+                    COLD_LEAD_ENABLED, FOLLOWUP_MAX)
 import database as db
 from anti_ban import AntiBan
 from lead_detector import detect_lead, detect_cold_lead
@@ -486,6 +486,49 @@ class UserClient:
             await db.mark_user_seen(lead["sender_id"])
             await db.update_cold_lead_status(lead_id, "DIALOG_STARTED")
             logger.info(f"Холодный диалог #{dialog_id} начат с лидом #{lead_id}")
+            return True
+        return False
+
+    async def send_followup(self, dialog: dict) -> bool:
+        """Отправка follow-up сообщения клиенту, который не ответил.
+        Генерирует короткое ненавязчивое напоминание через AI.
+        """
+        import ai_engine
+
+        if not await self.anti_ban.can_send():
+            logger.warning(f"Follow-up диалог #{dialog['id']}: анти-бан лимиты")
+            return False
+
+        messages = json.loads(dialog.get("ai_messages_json") or "[]")
+        followup_count = dialog.get("followup_count", 0)
+
+        context = (
+            f"Клиент не ответил на ваше последнее сообщение. "
+            f"Это {followup_count + 1}-е напоминание (не более {FOLLOWUP_MAX}). "
+            f"Напишите короткое, ненавязчивое напоминание (1-2 предложения). "
+            f"Будьте дружелюбны, без давления. Не повторяйте предыдущие сообщения. "
+            f"Мягко напомните о себе и предложите обсудить, если ещё актуально."
+        )
+        messages.append({"role": "user", "content": context})
+
+        result = await ai_engine.generate_dialogue_response(
+            messages_history=messages,
+            stage=dialog.get("stage", "INITIATING"),
+        )
+
+        if result is None:
+            logger.error(f"Ошибка генерации follow-up для диалога #{dialog['id']}")
+            return False
+
+        followup_msg, new_stage = result
+        messages.append({"role": "assistant", "content": followup_msg})
+
+        await db.update_dialog_messages(dialog["id"], json.dumps(messages, ensure_ascii=False))
+        await db.increment_followup(dialog["id"])
+
+        success = await self._send_message(dialog["sender_id"], followup_msg, fast=True)
+        if success:
+            logger.info(f"Follow-up #{followup_count + 1} отправлен для диалога #{dialog['id']}")
             return True
         return False
 

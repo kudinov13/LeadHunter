@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS dialogs (
     stage TEXT DEFAULT 'INITIATING',
     ai_messages_json TEXT DEFAULT '[]',
     price TEXT,
+    followup_count INTEGER DEFAULT 0,
+    last_followup_at TEXT,
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (lead_id) REFERENCES leads(id)
@@ -135,6 +137,7 @@ async def init_db():
         await _migrate_messages_log(db)
         await _migrate_leads(db)
         await _migrate_cold_leads(db)
+        await _migrate_dialogs(db)
         await db.commit()
 
 
@@ -176,6 +179,16 @@ async def _migrate_cold_leads(db):
         await db.execute("ALTER TABLE cold_leads ADD COLUMN market_price TEXT")
     if "market_deadline" not in columns:
         await db.execute("ALTER TABLE cold_leads ADD COLUMN market_deadline TEXT")
+
+
+async def _migrate_dialogs(db):
+    """Добавляет новые колонки в dialogs, если их ещё нет."""
+    async with db.execute("PRAGMA table_info(dialogs)") as cursor:
+        columns = {row[1] for row in await cursor.fetchall()}
+    if "followup_count" not in columns:
+        await db.execute("ALTER TABLE dialogs ADD COLUMN followup_count INTEGER DEFAULT 0")
+    if "last_followup_at" not in columns:
+        await db.execute("ALTER TABLE dialogs ADD COLUMN last_followup_at TEXT")
 
 
 # === Chats ===
@@ -553,6 +566,39 @@ async def get_dialog_by_id(dialog_id: int) -> dict | None:
         ) as cursor:
             row = await cursor.fetchone()
             return dict(row) if row else None
+
+
+async def get_stale_dialogs(hours_threshold: int = 24, max_followups: int = 2) -> list[dict]:
+    """Возвращает диалоги, где клиент не отвечал дольше hours_threshold часов
+    и ещё не превышен лимит follow-up сообщений.
+    Стадии: INITIATING (бот написал, клиент молчит) и QUALIFYING/NEGOTIATING (был диалог, клиент замолчал).
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT * FROM dialogs
+               WHERE stage IN ('INITIATING', 'QUALIFYING', 'NEGOTIATING')
+                 AND followup_count < ?
+                 AND datetime(updated_at) < datetime('now', ?)
+               ORDER BY updated_at ASC""",
+            (max_followups, f"-{hours_threshold} hours")
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def increment_followup(dialog_id: int):
+    """Увеличивает счётчик follow-up и обновляет last_followup_at."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """UPDATE dialogs
+               SET followup_count = followup_count + 1,
+                   last_followup_at = datetime('now'),
+                   updated_at = datetime('now')
+               WHERE id = ?""",
+            (dialog_id,)
+        )
+        await db.commit()
 
 
 # === Users seen ===
