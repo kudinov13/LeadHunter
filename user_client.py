@@ -137,7 +137,12 @@ class UserClient:
             await db.update_message_verdict(event.chat_id, message.id, verdict)
             return
 
-        # Лид найден
+        # Лид найден — проверяем дубликат (тот же отправитель уже дал лид недавно)
+        if await db.has_recent_lead_from_sender(sender.id, hours=24):
+            logger.info(f"Дубликат лида от {sender_name} (уже есть за 24ч) — пропускаем")
+            await db.update_message_verdict(event.chat_id, message.id, "duplicate_lead")
+            return
+
         chat_entity = await event.get_chat()
         chat_name = getattr(chat_entity, "title", str(event.chat_id))
         sender_username = getattr(sender, "username", None)

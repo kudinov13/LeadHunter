@@ -478,6 +478,18 @@ async def get_cold_outreach_count_today() -> int:
 
 # === Leads ===
 
+async def has_recent_lead_from_sender(sender_id: int, hours: int = 24) -> bool:
+    """Проверяет, есть ли уже лид от этого отправителя за последние hours часов."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """SELECT 1 FROM leads
+               WHERE sender_id = ?
+                 AND datetime(created_at) > datetime('now', ?)
+               LIMIT 1""",
+            (sender_id, f"-{hours} hours")
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
 async def add_lead(chat_id: int, chat_name: str, sender_id: int,
                    sender_name: str, sender_username: str, message_text: str,
                    category: str, task: str = None, budget: str = None,
