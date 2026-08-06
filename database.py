@@ -128,6 +128,7 @@ async def init_db():
         await db.execute("PRAGMA journal_mode=WAL")
         await db.executescript(SCHEMA)
         await _migrate_chats(db)
+        await _migrate_messages_log(db)
         await db.commit()
 
 
@@ -141,6 +142,14 @@ async def _migrate_chats(db):
         await db.execute("ALTER TABLE chats ADD COLUMN chat_rules TEXT")
     if "broadcast_times" not in columns:
         await db.execute("ALTER TABLE chats ADD COLUMN broadcast_times TEXT")
+
+
+async def _migrate_messages_log(db):
+    """Добавляет новые колонки в messages_log, если их ещё нет."""
+    async with db.execute("PRAGMA table_info(messages_log)") as cursor:
+        columns = {row[1] for row in await cursor.fetchall()}
+    if "filter_verdict" not in columns:
+        await db.execute("ALTER TABLE messages_log ADD COLUMN filter_verdict TEXT")
 
 
 # === Chats ===
