@@ -708,85 +708,87 @@ class NotificationBot:
             return
 
         import chat_finder
-        import asyncio as _asyncio
         from config import CHAT_JOIN_DAILY_LIMIT
+
+        # Проверяем, не идёт ли уже поиск
+        status = chat_finder.get_search_status()
+        if status["is_running"]:
+            await message.answer(
+                f"⏳ Поиск уже идёт (просмотрено {status['scanned']}/{status['total_found']}).\n"
+                f"Нажмите «🔎 Статус поиска» для деталей."
+            )
+            return
 
         joined_today = await db.get_chat_joins_today()
         remaining = CHAT_JOIN_DAILY_LIMIT - joined_today
         await message.answer(
-            f"� Запускаю поиск чатов...\n"
-            f"�� Лимит вступлений сегодня: {joined_today}/{CHAT_JOIN_DAILY_LIMIT} "
+            f"🔍 Запускаю поиск чатов в фоне...\n"
+            f"📊 Лимит вступлений сегодня: {joined_today}/{CHAT_JOIN_DAILY_LIMIT} "
             f"(осталось {remaining})\n\n"
             f"⏳ Поиск идёт в фоне. Нажмите «🔎 Статус поиска» чтобы проверить прогресс."
         )
 
-        # Live-прогресс через редактирование сообщения
-        progress_msg = None
-
-        async def progress_cb(status: dict):
-            nonlocal progress_msg
-            text = (
-                f"🔍 Поиск чатов...\n\n"
-                f"📊 Найдено: {status['total_found']}\n"
-                f"✅ Просмотрено: {status['scanned']}\n"
-                f"🔥 Одобрено: {status['approved']}\n"
-                f"❌ Отклонено: {status['rejected']}\n"
-                f"👀 Сейчас: @{status['current_chat'] or '—'}\n"
-                f"🕐 Начат: {status['started_at']}"
-            )
+        # Запускаем в фоне чтобы не блокировать бота
+        async def _run_search():
             try:
-                if progress_msg is None:
-                    progress_msg = await message.answer(text)
-                else:
-                    await progress_msg.edit_text(text)
-            except Exception:
-                pass  # не падать если Telegram не даёт редактировать
+                good_chats = await chat_finder.search_and_scan(
+                    self.user_client.client,
+                    progress_callback=None,  # live-обновления через кнопку статуса
+                )
+                if not good_chats:
+                    await self.bot.send_message(
+                        OWNER_TG_ID,
+                        "📭 Поиск завершён. Бизнес-чатов не найдено."
+                    )
+                    return
 
-        good_chats = await chat_finder.search_and_scan(
-            self.user_client.client,
-            progress_callback=progress_cb,
-        )
+                await self.bot.send_message(
+                    OWNER_TG_ID,
+                    f"✅ Поиск завершён! Найдено {len(good_chats)} бизнес-чатов."
+                )
 
-        if not good_chats:
-            await message.answer("📭 Бизнес-чатов не найдено. Попробуйте позже или измените ключевые слова.")
-            return
+                for chat in good_chats[:10]:
+                    scan = chat.get("scan", {})
+                    category = scan.get("category", "unknown")
+                    reason = scan.get("reason", "")
+                    has_orders = scan.get("has_orders", False)
+                    folder = "freelance" if has_orders else "business"
 
-        await message.answer(f"✅ Найдено {len(good_chats)} бизнес-чатов. Отправляю на проверку...")
+                    cat_emoji = {"freelance": "🔥", "business": "💼"}.get(category, "❓")
 
-        for chat in good_chats[:10]:
-            scan = chat.get("scan", {})
-            category = scan.get("category", "unknown")
-            reason = scan.get("reason", "")
-            has_orders = scan.get("has_orders", False)
-            folder = "freelance" if has_orders else "business"
+                    text = (
+                        f"{cat_emoji} Чат: {chat['title']}\n"
+                        f"📍 @{chat['username']}\n"
+                        f"👥 Участников: {chat['participants_count']}\n"
+                        f"📂 Категория: {category}\n"
+                        f"📝 {reason}\n"
+                    )
 
-            cat_emoji = {"freelance": "🔥", "business": "💼"}.get(category, "❓")
+                    samples = scan.get("sample_texts", [])
+                    if samples:
+                        text += f"\n💬 Пример:\n  {samples[0][:150]}...\n"
 
-            text = (
-                f"{cat_emoji} Чат: {chat['title']}\n"
-                f"📍 @{chat['username']}\n"
-                f"👥 Участников: {chat['participants_count']}\n"
-                f"📂 Категория: {category}\n"
-                f"📝 {reason}\n"
-            )
+                    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+                        InlineKeyboardButton(
+                            text=f"✅ Вступить ({folder})",
+                            callback_data=f"approve_chat_{folder}_{chat['username']}"
+                        ),
+                        InlineKeyboardButton(
+                            text="❌ Отклонить",
+                            callback_data=f"reject_chat_0_{chat['username']}"
+                        ),
+                    ]])
+                    await self.bot.send_message(OWNER_TG_ID, text, reply_markup=keyboard)
+                    await asyncio.sleep(0.5)
 
-            # Показываем пример сообщения
-            samples = scan.get("sample_texts", [])
-            if samples:
-                text += f"\n💬 Пример:\n  {samples[0][:150]}...\n"
+            except Exception as e:
+                logger.error(f"Ошибка фонового поиска чатов: {e}", exc_info=True)
+                await self.bot.send_message(
+                    OWNER_TG_ID,
+                    f"❌ Ошибка поиска чатов: {e}"
+                )
 
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(
-                    text=f"✅ Вступить ({folder})",
-                    callback_data=f"approve_chat_{folder}_{chat['username']}"
-                ),
-                InlineKeyboardButton(
-                    text="❌ Отклонить",
-                    callback_data=f"reject_chat_0_{chat['username']}"
-                ),
-            ]])
-            await message.answer(text, reply_markup=keyboard)
-            await _asyncio.sleep(0.5)
+        asyncio.create_task(_run_search())
 
     async def _handle_search_status(self, message: Message):
         """Текущий статус поиска чатов."""
