@@ -278,6 +278,16 @@ async def search_chats_no_ai(client, keywords: list[str] = None,
     already_found = await db.get_all_found_chat_ids() if exclude_already_found else set()
     logger.info(f"search_chats_no_ai: started, keywords={keywords}, batch_size={batch_size}, already_found={len(already_found)}")
 
+    # Получаем список чатов, в которых пользователь уже состоит
+    my_dialog_ids = set()
+    try:
+        async for dialog in client.iter_dialogs():
+            if dialog.entity:
+                my_dialog_ids.add(dialog.entity.id)
+        logger.info(f"search_chats_no_ai: user is member of {len(my_dialog_ids)} dialogs")
+    except Exception as e:
+        logger.warning(f"search_chats_no_ai: failed to load dialogs: {e}")
+
     found = {}
     for kw in keywords:
         if len(found) >= batch_size:
@@ -298,6 +308,11 @@ async def search_chats_no_ai(client, keywords: list[str] = None,
             for chat in result.chats:
                 chat_id = chat.id
                 if chat_id in found or chat_id in already_found:
+                    continue
+
+                # Исключаем чаты, в которых пользователь уже состоит
+                if chat_id in my_dialog_ids:
+                    logger.info(f"  chat: {chat.title} @{getattr(chat, 'username', None)} id={chat_id} — skip: already member")
                     continue
 
                 username = getattr(chat, "username", None)
