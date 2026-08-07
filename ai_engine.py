@@ -256,6 +256,19 @@ async def _chat_with_fallback(
                     except Exception as e3:
                         logger.error(f"Резервная модель + второй ключ не сработали: {e3}")
                 logger.error(f"Резервная модель Groq тоже не сработала: {e2}")
+                # Groq исчерпан — пробуем OpenRouter как бесплатный fallback
+                if OPENROUTER_API_KEY:
+                    logger.warning("Пробуем fallback на OpenRouter (бесплатная модель)")
+                    try:
+                        or_client = _get_client("openrouter")
+                        or_kwargs = {k: v for k, v in kwargs.items() if k != "response_format"}
+                        response = await or_client.chat.completions.create(
+                            model="nvidia/nemotron-3-super-120b-a12b:free", messages=messages, **or_kwargs
+                        )
+                        if response.choices:
+                            return response.choices[0].message.content
+                    except Exception as e_or:
+                        logger.error(f"Fallback на OpenRouter тоже не сработал: {e_or}")
                 raise
         try:
             response = await client.chat.completions.create(
