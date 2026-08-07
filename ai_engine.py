@@ -9,7 +9,7 @@ import logging
 import httpx
 from openai import AsyncOpenAI
 from config import (OMNIROUTE_API_KEY, OMNIROUTE_BASE_URL,
-                    GROQ_API_KEY, GROQ_API_KEY_2, OPENROUTER_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY,
+                    GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3, OPENROUTER_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY,
                     AI_HTTP_PROXY,
                     DIALOG_AI_PROVIDER, DIALOG_MODEL,
                     CLASSIFY_AI_PROVIDER, CLASSIFY_MODEL,
@@ -49,7 +49,7 @@ _JSON_MODELS = {
 _clients: dict[str, AsyncOpenAI] = {}
 
 # Все ключи Groq для ротации при 429
-_GROQ_KEYS = [k for k in (GROQ_API_KEY, GROQ_API_KEY_2) if k]
+_GROQ_KEYS = [k for k in (GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3) if k]
 _groq_key_idx = 0
 
 
@@ -73,6 +73,23 @@ def _rotate_groq_key():
         logger.warning(f"Ротация Groq ключа: теперь ключ #{_groq_key_idx % len(_GROQ_KEYS) + 1}")
     # Сбрасываем кэш клиента чтобы пересоздался с новым ключом
     _clients.pop("groq", None)
+
+
+async def _try_groq_all_keys(model: str, messages: list, kwargs: dict) -> str | None:
+    """Пробует указанную модель на всех доступных ключах Groq по очереди
+    (начиная с текущего). Ротирует ключ при неудаче."""
+    for _ in range(len(_GROQ_KEYS)):
+        try:
+            client = _get_client("groq")
+            response = await client.chat.completions.create(
+                model=model, messages=messages, **kwargs
+            )
+            if response.choices and response.choices[0].message.content:
+                return response.choices[0].message.content
+        except Exception as e:
+            logger.warning(f"Groq ключ #{_groq_key_idx % len(_GROQ_KEYS) + 1}, модель {model}: {e}")
+        _rotate_groq_key()
+    return None
 
 
 def _extract_json(text: str | None) -> dict:
@@ -226,55 +243,31 @@ async def _chat_with_fallback(
             raise
         logger.warning(f"Модель {model} недоступна ({e}), пробуем fallback")
         if provider == "groq":
-            # Ротация ключей Groq при 429 — пробуем второй ключ перед fallback моделью
-            if len(_GROQ_KEYS) > 1 and "429" in error_text:
-                _rotate_groq_key()
+            # Пробуем ту же модель на всех оставшихся ключах Groq
+            result = await _try_groq_all_keys(model, messages, kwargs)
+            if result:
+                return result
+            # Пробуем резервную модель на всех ключах Groq
+            result = await _try_groq_all_keys(_GROQ_FALLBACK_MODEL, messages, kwargs)
+            if result:
+                return result
+            logger.error("Все ключи Groq и резервная модель не сработали")
+            # Groq исчерпан — пробуем OpenRouter как бесплатный fallback
+            if OPENROUTER_API_KEY:
+                logger.warning("Пробуем fallback на OpenRouter (бесплатная модель)")
                 try:
-                    new_client = _get_client("groq")
-                    response = await new_client.chat.completions.create(
-                        model=model, messages=messages, **kwargs
+                    or_client = _get_client("openrouter")
+                    or_kwargs = {k: v for k, v in kwargs.items() if k != "response_format"}
+                    response = await or_client.chat.completions.create(
+                        model="nvidia/nemotron-3-super-120b-a12b:free", messages=messages, **or_kwargs
                     )
                     if response.choices and response.choices[0].message.content:
                         return response.choices[0].message.content
-                except Exception as e_rot:
-                    logger.warning(f"Второй ключ тоже не сработал: {e_rot}")
-            # Пробуем резервную модель на текущем ключе
-            try:
-                response = await client.chat.completions.create(
-                    model=_GROQ_FALLBACK_MODEL, messages=messages, **kwargs
-                )
-                if response.choices and response.choices[0].message.content:
-                    return response.choices[0].message.content
-            except Exception as e2:
-                # Если есть второй ключ — пробуем резервную модель с ним
-                if len(_GROQ_KEYS) > 1 and _groq_key_idx == 0:
-                    _rotate_groq_key()
-                    try:
-                        new_client = _get_client("groq")
-                        response = await new_client.chat.completions.create(
-                            model=_GROQ_FALLBACK_MODEL, messages=messages, **kwargs
-                        )
-                        if response.choices and response.choices[0].message.content:
-                            return response.choices[0].message.content
-                    except Exception as e3:
-                        logger.error(f"Резервная модель + второй ключ не сработали: {e3}")
-                logger.error(f"Резервная модель Groq тоже не сработала: {e2}")
-                # Groq исчерпан — пробуем OpenRouter как бесплатный fallback
-                if OPENROUTER_API_KEY:
-                    logger.warning("Пробуем fallback на OpenRouter (бесплатная модель)")
-                    try:
-                        or_client = _get_client("openrouter")
-                        or_kwargs = {k: v for k, v in kwargs.items() if k != "response_format"}
-                        response = await or_client.chat.completions.create(
-                            model="nvidia/nemotron-3-super-120b-a12b:free", messages=messages, **or_kwargs
-                        )
-                        if response.choices and response.choices[0].message.content:
-                            return response.choices[0].message.content
-                        else:
-                            logger.warning(f"OpenRouter вернул пустой ответ: {response}")
-                    except Exception as e_or:
-                        logger.error(f"Fallback на OpenRouter тоже не сработал: {e_or}")
-                raise
+                    else:
+                        logger.warning(f"OpenRouter вернул пустой ответ: {response}")
+                except Exception as e_or:
+                    logger.error(f"Fallback на OpenRouter тоже не сработал: {e_or}")
+            raise
         try:
             response = await client.chat.completions.create(
                 model="auto", messages=messages, **kwargs
