@@ -538,11 +538,13 @@ async def generate_broadcast(chat_rules: str, recent_messages: list[str],
 
         messages = [{"role": "user", "content": prompt}]
 
+        logger.info(f"generate_broadcast: is_direct_promo={is_direct_promo}, prompt_len={len(prompt)}")
         content = await _chat_with_fallback(
             BROADCAST_AI_PROVIDER, BROADCAST_MODEL,
             messages,
             temperature=0.9, max_tokens=1200,
         )
+        logger.info(f"generate_broadcast: AI ответил, content_len={len(content) if content else 0}")
 
         # Retry с напоминанием о языке, если первая попытка вернула посторонние символы
         if content and _has_foreign_script(content):
@@ -555,12 +557,15 @@ async def generate_broadcast(chat_rules: str, recent_messages: list[str],
                 temperature=0.7, max_tokens=1200,
             )
         if not content:
+            logger.error("generate_broadcast: content пустой после AI")
             return None
 
+        logger.info(f"generate_broadcast: raw content[:300]={content[:300]}")
         result = _extract_json(content)
+        logger.info(f"generate_broadcast: extracted keys={list(result.keys())}")
         skip = result.get("skip")
         if not isinstance(skip, bool):
-            logger.error(f"Неверный формат ответа рассылки (skip не bool): {content[:200]}")
+            logger.error(f"Неверный формат ответа рассылки (skip не bool): skip={skip!r}, content[:200]={content[:200]}")
             return None
         
         # Получаем выбранный вариант
@@ -576,7 +581,7 @@ async def generate_broadcast(chat_rules: str, recent_messages: list[str],
                     break
         
         if not skip and not message:
-            logger.error(f"Рассылка без текста при skip=false: {content[:200]}")
+            logger.error(f"Рассылка без текста при skip=false: selected={selected!r}, variant_key={variant_key!r}, result_keys={list(result.keys())}, content[:300]={content[:300]}")
             return None
 
         # Защита от бага слабых моделей: посторонние алфавиты (иероглифы и т.п.)
