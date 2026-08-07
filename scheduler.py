@@ -232,8 +232,11 @@ class MessageScheduler:
 
         success = await self.user_client.send_scheduled_message(chat_id, result["message"])
         if success:
+            niche = result.get("chat_niche", "")
+            entry = result.get("entry_point", "")
+            niche_info = f"📊 Ниша: {niche}\n💡 Точка входа: {entry}\n\n" if niche else ""
             await self._notify_owner(
-                f"✅ Рассылка отправлена в «{chat_name}»:\n\n{result['message']}"
+                f"✅ Рассылка отправлена в «{chat_name}»:\n\n{niche_info}{result['message']}"
             )
         else:
             await self._notify_owner(

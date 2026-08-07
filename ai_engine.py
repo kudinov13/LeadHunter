@@ -6,6 +6,7 @@ Groq и OpenRouter также имеют бесплатные модели.
 """
 import json
 import logging
+import re
 import httpx
 from openai import AsyncOpenAI
 from config import (OMNIROUTE_API_KEY, OMNIROUTE_BASE_URL,
@@ -101,8 +102,6 @@ def _extract_json(text: str | None) -> dict:
     Устойчив к: None, reasoning-блокам, обрезанному JSON (max_tokens),
     JSON внутри code-блоков и лишнему тексту вокруг.
     """
-    import re
-
     _default = {"category": "NOT_LEAD", "task": "", "budget": "", "deadline": ""}
 
     if not text:
@@ -141,13 +140,18 @@ def _extract_json(text: str | None) -> dict:
 
     # Последний рубеж: JSON обрезан лимитом токенов — вытаскиваем поля регэкспами,
     # чтобы не потерять лид из-за оборванного ответа
-    field_re = re.compile(r'"(category|task|budget|deadline|business_type|pain|hook)"'
-                          r'\s*:\s*"([^"]*)', re.DOTALL)
+    field_re = re.compile(r'"(category|task|budget|deadline|business_type|pain|hook'
+                          r'|skip|reason|variant_a|variant_b|variant_c|selected'
+                          r'|chat_niche|entry_point|message)"'
+                          r'\s*:\s*"?([^",}]*)', re.DOTALL)
     fields = {m.group(1): m.group(2).strip() for m in field_re.finditer(text)}
-    if fields.get("category"):
-        logger.warning(f"JSON обрезан, восстановил поля регэкспом: {fields.get('category')}")
-        result = dict(_default)
+    if fields.get("category") or fields.get("skip") or fields.get("variant_a"):
+        logger.warning(f"JSON обрезан, восстановил поля регэкспом: {list(fields.keys())}")
+        result = {}
         result.update(fields)
+        # Преобразуем skip из строки в bool если нужно
+        if "skip" in result:
+            result["skip"] = result["skip"].lower() in ("true", "1", "yes")
         return result
 
     logger.warning(f"Не удалось извлечь JSON из ответа: {text[:200]}")
@@ -489,6 +493,19 @@ async def generate_first_message_variants(
     return variants
 
 
+# Диапазоны Unicode для "чужих" алфавитов, которые не должны появляться в русском тексте
+# (CJK, хирагана/катакана, хангыль, арабский, деванагари и т.п.)
+_FOREIGN_SCRIPT_RE = re.compile(
+    r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u0600-\u06ff\u0900-\u097f'
+    r'\u0e00-\u0e7f\u1100-\u11ff\uff00-\uffef]'
+)
+
+
+def _has_foreign_script(text: str) -> bool:
+    """Проверяет, есть ли в тексте символы чужих алфавитов (баг слабых моделей)."""
+    return bool(_FOREIGN_SCRIPT_RE.search(text or ""))
+
+
 async def generate_broadcast(chat_rules: str, recent_messages: list[str],
                              now_str: str) -> dict | None:
     """Генерация рекламной рассылки с учётом правил чата.
@@ -510,11 +527,24 @@ async def generate_broadcast(chat_rules: str, recent_messages: list[str],
             current_datetime=now_str,
         )
 
+        messages = [{"role": "user", "content": prompt}]
+
         content = await _chat_with_fallback(
             BROADCAST_AI_PROVIDER, BROADCAST_MODEL,
-            [{"role": "user", "content": prompt}],
-            temperature=0.9, max_tokens=800,
+            messages,
+            temperature=0.9, max_tokens=1200,
         )
+
+        # Retry с напоминанием о языке, если первая попытка вернула посторонние символы
+        if content and _has_foreign_script(content):
+            logger.warning("generate_broadcast: первая попытка содержала посторонние символы, retry")
+            messages.append({"role": "assistant", "content": content})
+            messages.append({"role": "user", "content": "В твоём ответе обнаружены иероглифы или символы чужих алфавитов. Перепиши ТОЛЬКО на русском кириллицей. Убери все нерусские символы. Верни только JSON."})
+            content = await _chat_with_fallback(
+                BROADCAST_AI_PROVIDER, BROADCAST_MODEL,
+                messages,
+                temperature=0.7, max_tokens=1200,
+            )
         if not content:
             return None
 
@@ -540,9 +570,15 @@ async def generate_broadcast(chat_rules: str, recent_messages: list[str],
             logger.error(f"Рассылка без текста при skip=false: {content[:200]}")
             return None
 
+        # Защита от бага слабых моделей: посторонние алфавиты (иероглифы и т.п.)
+        if not skip and _has_foreign_script(message):
+            logger.error(f"Рассылка отклонена: обнаружены посторонние символы в тексте: {message[:200]}")
+            return None
+
         result["reason"] = result.get("reason") or ""
         result["message"] = message
-        logger.info(f"Рассылка сгенерирована: skip={skip}, selected={selected}, "
+        niche = result.get("chat_niche", "")
+        logger.info(f"Рассылка сгенерирована: skip={skip}, selected={selected}, niche={niche}, "
                     f"{result['reason'][:60] if skip else result['message'][:60]}")
         return result
     except Exception as e:
