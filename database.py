@@ -133,6 +133,20 @@ CREATE TABLE IF NOT EXISTS cold_outreach_log (
     status TEXT,
     sent_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS found_chats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    title TEXT,
+    username TEXT,
+    participants_count INTEGER DEFAULT 0,
+    is_channel INTEGER DEFAULT 0,
+    is_group INTEGER DEFAULT 0,
+    search_keyword TEXT,
+    found_date TEXT DEFAULT (date('now')),
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(chat_id)
+);
 """
 
 
@@ -906,3 +920,77 @@ async def set_setting(key: str, value: str):
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value)
         )
         await db.commit()
+
+
+# === Found Chats (поиск без AI) ===
+
+async def add_found_chat(chat_id: int, title: str, username: str,
+                         participants_count: int, is_channel: bool,
+                         is_group: bool, search_keyword: str = None) -> bool:
+    """Добавляет найденный чат в БД. Возвращает True если добавлен, False если дубликат."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            await db.execute(
+                """INSERT OR IGNORE INTO found_chats
+                   (chat_id, title, username, participants_count, is_channel, is_group, search_keyword)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (chat_id, title, username, participants_count,
+                 1 if is_channel else 0, 1 if is_group else 0, search_keyword)
+            )
+            await db.commit()
+            cursor = await db.execute("SELECT changes()")
+            changes = (await cursor.fetchone())[0]
+            return changes > 0
+        except Exception:
+            return False
+
+
+async def is_chat_already_found(chat_id: int) -> bool:
+    """Проверяет, есть ли чат уже в found_chats."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT 1 FROM found_chats WHERE chat_id = ?", (chat_id,)
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+
+async def get_found_chats_today() -> list[dict]:
+    """Возвращает все чаты, найденные сегодня."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT * FROM found_chats WHERE found_date = ? ORDER BY participants_count DESC""",
+            (today,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def get_found_chats_count_today() -> int:
+    """Возвращает количество чатов, найденных сегодня."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM found_chats WHERE found_date = ?", (today,)
+        ) as cursor:
+            return (await cursor.fetchone())[0]
+
+
+async def cleanup_old_found_chats(days: int = 3) -> int:
+    """Удаляет найденные чаты старше указанного количества дней. Возвращает количество удалённых."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "DELETE FROM found_chats WHERE found_date < date('now', ?)",
+            (f"-{days} days",)
+        )
+        await db.commit()
+        return cursor.rowcount
+
+
+async def get_all_found_chat_ids() -> set[int]:
+    """Возвращает множество всех chat_id из found_chats (для фильтрации дубликатов при поиске)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT chat_id FROM found_chats") as cursor:
+            rows = await cursor.fetchall()
+            return {row[0] for row in rows}

@@ -8,7 +8,8 @@ from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup,
                            InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton)
 from aiogram.filters import Command
 from aiogram.enums import ParseMode
-from config import NOTIF_BOT_TOKEN, OWNER_TG_ID, COLD_OUTREACH_DAILY_LIMIT, TG_BOT_PROXY
+from config import (NOTIF_BOT_TOKEN, OWNER_TG_ID, COLD_OUTREACH_DAILY_LIMIT, TG_BOT_PROXY,
+                     CHAT_SEARCH_DAILY_LIMIT, CHAT_SEARCH_BATCH_SIZE, CHAT_SEARCH_CLEANUP_DAYS)
 import database as db
 import gis_importer
 import cold_outreach
@@ -38,8 +39,8 @@ class NotificationBot:
             keyboard=[
                 [KeyboardButton(text="📊 Статус"), KeyboardButton(text="🔥 Лиды")],
                 [KeyboardButton(text="💬 Диалоги"), KeyboardButton(text="🔍 Поиск чатов")],
-                [KeyboardButton(text="❄️ Холодный обход"), KeyboardButton(text="📈 Статистика")],
-                [KeyboardButton(text="⚙️ Настройки")],
+                [KeyboardButton(text="📋 Найденные чаты"), KeyboardButton(text="❄️ Холодный обход")],
+                [KeyboardButton(text="📈 Статистика"), KeyboardButton(text="⚙️ Настройки")],
             ],
             resize_keyboard=True,
         )
@@ -204,6 +205,26 @@ class NotificationBot:
             if message.from_user.id != OWNER_TG_ID:
                 return
             await self._handle_search_status(message)
+
+        @self.dp.message(F.text == "📋 Найденные чаты")
+        async def btn_found_chats(message: Message):
+            if message.from_user.id != OWNER_TG_ID:
+                return
+            await self._handle_found_chats(message)
+
+        @self.dp.callback_query(F.data == "view_found_chats")
+        async def cb_view_found_chats(callback: CallbackQuery):
+            if callback.from_user.id != OWNER_TG_ID:
+                return
+            await callback.answer()
+            await self._handle_view_found_chats(callback.message)
+
+        @self.dp.callback_query(F.data == "continue_search")
+        async def cb_continue_search(callback: CallbackQuery):
+            if callback.from_user.id != OWNER_TG_ID:
+                return
+            await callback.answer("Запускаю поиск...")
+            await self._handle_continue_search(callback.message)
 
         @self.dp.message(Command("start"))
         async def cmd_start(message: Message):
@@ -702,86 +723,78 @@ class NotificationBot:
         await message.answer(text)
 
     async def _handle_search_chats(self, message: Message):
-        """Авто-поиск чатов: ищет, сканирует, предлагает для одобрения."""
+        """Поиск чатов по ключевым словам БЕЗ AI. Сохраняет в БД для ручной проверки."""
         if not self.user_client or not hasattr(self.user_client, 'client'):
             await message.answer("❌ Клиент не инициализирован")
             return
 
         import chat_finder
-        from config import CHAT_JOIN_DAILY_LIMIT
 
         # Проверяем, не идёт ли уже поиск
-        status = chat_finder.get_search_status()
-        if status["is_running"]:
+        if chat_finder.get_search_status()["is_running"]:
+            await message.answer("⏳ Поиск уже идёт. Нажмите «🔎 Статус поиска» для деталей.")
+            return
+
+        # Проверяем дневной лимит
+        found_today = await db.get_found_chats_count_today()
+        if found_today >= CHAT_SEARCH_DAILY_LIMIT:
             await message.answer(
-                f"⏳ Поиск уже идёт (просмотрено {status['scanned']}/{status['total_found']}).\n"
-                f"Нажмите «🔎 Статус поиска» для деталей."
+                f"📊 Сегодня уже найдено {found_today}/{CHAT_SEARCH_DAILY_LIMIT} чатов.\n"
+                f"Лимит исчерпан. Нажмите «� Найденные чаты» для просмотра."
             )
             return
 
-        joined_today = await db.get_chat_joins_today()
-        remaining = CHAT_JOIN_DAILY_LIMIT - joined_today
+        remaining_today = CHAT_SEARCH_DAILY_LIMIT - found_today
+        batch = min(CHAT_SEARCH_BATCH_SIZE, remaining_today)
+
         await message.answer(
-            f"🔍 Запускаю поиск чатов в фоне...\n"
-            f"📊 Лимит вступлений сегодня: {joined_today}/{CHAT_JOIN_DAILY_LIMIT} "
-            f"(осталось {remaining})\n\n"
-            f"⏳ Поиск идёт в фоне. Нажмите «🔎 Статус поиска» чтобы проверить прогресс."
+            f"🔍 Запускаю поиск чатов (без AI)...\n"
+            f"📊 Найдено сегодня: {found_today}/{CHAT_SEARCH_DAILY_LIMIT}\n"
+            f"🎯 Ищу батч: {batch} чатов\n\n"
+            f"⏳ Поиск идёт в фоне."
         )
 
-        # Запускаем в фоне чтобы не блокировать бота
         async def _run_search():
             try:
-                good_chats = await chat_finder.search_and_scan(
-                    self.user_client.client,
-                    progress_callback=None,  # live-обновления через кнопку статуса
-                )
-                if not good_chats:
-                    await self.bot.send_message(
-                        OWNER_TG_ID,
-                        "📭 Поиск завершён. Бизнес-чатов не найдено."
-                    )
-                    return
+                chat_finder._search_status.update({
+                    "total_found": 0, "scanned": 0, "approved": 0, "rejected": 0,
+                    "current_chat": "", "current_chat_title": "",
+                    "is_running": True, "started_at": datetime.now().strftime("%H:%M:%S"),
+                })
 
+                chats = await chat_finder.search_chats_no_ai(
+                    self.user_client.client,
+                    batch_size=batch,
+                )
+
+                chat_finder._search_status["total_found"] = len(chats)
+                chat_finder._search_status["is_running"] = False
+
+                # Сохраняем в БД
+                saved = 0
+                for chat in chats:
+                    added = await db.add_found_chat(
+                        chat_id=chat["id"],
+                        title=chat["title"],
+                        username=chat["username"],
+                        participants_count=chat["participants_count"],
+                        is_channel=chat["is_channel"],
+                        is_group=chat["is_group"],
+                        search_keyword=chat.get("search_keyword"),
+                    )
+                    if added:
+                        saved += 1
+
+                total_now = await db.get_found_chats_count_today()
                 await self.bot.send_message(
                     OWNER_TG_ID,
-                    f"✅ Поиск завершён! Найдено {len(good_chats)} бизнес-чатов."
+                    f"✅ Поиск завершён! Найдено {saved} новых чатов.\n"
+                    f"📊 Всего за сегодня: {total_now}/{CHAT_SEARCH_DAILY_LIMIT}\n\n"
+                    f"Нажмите «📋 Найденные чаты» для просмотра."
                 )
 
-                for chat in good_chats[:10]:
-                    scan = chat.get("scan", {})
-                    category = scan.get("category", "unknown")
-                    reason = scan.get("reason", "")
-                    has_orders = scan.get("has_orders", False)
-                    folder = "freelance" if has_orders else "business"
-
-                    cat_emoji = {"freelance": "🔥", "business": "💼"}.get(category, "❓")
-
-                    text = (
-                        f"{cat_emoji} Чат: {chat['title']}\n"
-                        f"📍 @{chat['username']}\n"
-                        f"👥 Участников: {chat['participants_count']}\n"
-                        f"📂 Категория: {category}\n"
-                        f"📝 {reason}\n"
-                    )
-
-                    samples = scan.get("sample_texts", [])
-                    if samples:
-                        text += f"\n💬 Пример:\n  {samples[0][:150]}...\n"
-
-                    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-                        InlineKeyboardButton(
-                            text=f"✅ Вступить ({folder})",
-                            callback_data=f"approve_chat_{folder}_{chat['username']}"
-                        ),
-                        InlineKeyboardButton(
-                            text="❌ Отклонить",
-                            callback_data=f"reject_chat_0_{chat['username']}"
-                        ),
-                    ]])
-                    await self.bot.send_message(OWNER_TG_ID, text, reply_markup=keyboard)
-                    await asyncio.sleep(0.5)
-
             except Exception as e:
+                chat_finder._search_status["is_running"] = False
                 logger.error(f"Ошибка фонового поиска чатов: {e}", exc_info=True)
                 await self.bot.send_message(
                     OWNER_TG_ID,
@@ -804,9 +817,151 @@ class NotificationBot:
             f"🔥 Одобрено: {s['approved']}\n"
             f"❌ Отклонено: {s['rejected']}\n\n"
             f"👀 Последний чат: @{s['current_chat'] or '—'}\n"
-            f"📝 Название: {s['current_chat_title'] or '—'}"
+            f"� Название: {s['current_chat_title'] or '—'}"
         )
         await message.answer(text)
+
+    async def _handle_found_chats(self, message: Message):
+        """Показывает количество найденных за день чатов с кнопками просмотра и продолжения."""
+        count = await db.get_found_chats_count_today()
+        if count == 0:
+            await message.answer(
+                "📋 Найденные чаты\n\n"
+                "📭 Сегодня чатов не найдено.\n"
+                "Нажмите «� Поиск чатов» чтобы запустить поиск."
+            )
+            return
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📊 Просмотр чатов (Excel)", callback_data="view_found_chats")],
+            [InlineKeyboardButton(text="🔄 Продолжить поиски", callback_data="continue_search")],
+        ])
+        await message.answer(
+            f"📋 Найденные чаты\n\n"
+            f"📊 Найдено за сегодня: {count}/{CHAT_SEARCH_DAILY_LIMIT}\n"
+            f"⏳ Чаты старше {CHAT_SEARCH_CLEANUP_DAYS} дней удаляются автоматически\n\n"
+            f"Нажмите кнопку ниже для действий:",
+            reply_markup=keyboard
+        )
+
+    async def _handle_view_found_chats(self, message: Message):
+        """Отправляет Excel-файл с найденными за сегодня чатами."""
+        chats = await db.get_found_chats_today()
+        if not chats:
+            await message.answer("📭 Нет найденных чатов за сегодня.")
+            return
+
+        import io
+        from openpyxl import Workbook
+        from aiogram.types import BufferedInputFile
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Найденные чаты"
+        ws.append(["№", "Название", "Username", "Ссылка", "Участников", "Тип", "Ключевое слово", "Дата"])
+
+        for i, chat in enumerate(chats, 1):
+            chat_type = "Канал" if chat["is_channel"] else ("Группа" if chat["is_group"] else "Чат")
+            ws.append([
+                i,
+                chat["title"],
+                f"@{chat['username']}",
+                f"https://t.me/{chat['username']}",
+                chat["participants_count"],
+                chat_type,
+                chat.get("search_keyword", ""),
+                chat.get("found_date", ""),
+            ])
+
+        # Авто-ширина колонок
+        for col in ws.columns:
+            max_len = max(len(str(cell.value or "")) for cell in col)
+            ws.column_dimensions[col[0].column_letter].width = min(max_len + 2, 40)
+
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        filename = f"found_chats_{today}.xlsx"
+
+        await message.answer_document(
+            BufferedInputFile(buf.read(), filename),
+            caption=f"📊 Найденные чаты за {today} ({len(chats)} шт.)"
+        )
+
+    async def _handle_continue_search(self, message: Message):
+        """Продолжает поиск чатов (ещё один батч)."""
+        if not self.user_client or not hasattr(self.user_client, 'client'):
+            await message.answer("❌ Клиент не инициализирован")
+            return
+
+        import chat_finder
+
+        if chat_finder.get_search_status()["is_running"]:
+            await message.answer("⏳ Поиск уже идёт. Подождите...")
+            return
+
+        found_today = await db.get_found_chats_count_today()
+        if found_today >= CHAT_SEARCH_DAILY_LIMIT:
+            await message.answer(
+                f"📊 Лимит на сегодня исчерпан: {found_today}/{CHAT_SEARCH_DAILY_LIMIT}\n"
+                f"Чаты удалятся через {CHAT_SEARCH_CLEANUP_DAYS} дней."
+            )
+            return
+
+        remaining = CHAT_SEARCH_DAILY_LIMIT - found_today
+        batch = min(CHAT_SEARCH_BATCH_SIZE, remaining)
+
+        await message.answer(f"🔄 Продолжаю поиск ({batch} чатов)...")
+
+        async def _run_search():
+            try:
+                chat_finder._search_status.update({
+                    "total_found": 0, "scanned": 0, "approved": 0, "rejected": 0,
+                    "current_chat": "", "current_chat_title": "",
+                    "is_running": True, "started_at": datetime.now().strftime("%H:%M:%S"),
+                })
+
+                chats = await chat_finder.search_chats_no_ai(
+                    self.user_client.client,
+                    batch_size=batch,
+                )
+
+                chat_finder._search_status["total_found"] = len(chats)
+                chat_finder._search_status["is_running"] = False
+
+                saved = 0
+                for chat in chats:
+                    added = await db.add_found_chat(
+                        chat_id=chat["id"],
+                        title=chat["title"],
+                        username=chat["username"],
+                        participants_count=chat["participants_count"],
+                        is_channel=chat["is_channel"],
+                        is_group=chat["is_group"],
+                        search_keyword=chat.get("search_keyword"),
+                    )
+                    if added:
+                        saved += 1
+
+                total_now = await db.get_found_chats_count_today()
+                await self.bot.send_message(
+                    OWNER_TG_ID,
+                    f"✅ Поиск завершён! Найдено {saved} новых чатов.\n"
+                    f"� Всего за сегодня: {total_now}/{CHAT_SEARCH_DAILY_LIMIT}\n\n"
+                    f"Нажмите «📋 Найденные чаты» для просмотра."
+                )
+
+            except Exception as e:
+                chat_finder._search_status["is_running"] = False
+                logger.error(f"Ошибка фонового поиска чатов: {e}", exc_info=True)
+                await self.bot.send_message(
+                    OWNER_TG_ID,
+                    f"❌ Ошибка поиска чатов: {e}"
+                )
+
+        asyncio.create_task(_run_search())
 
     async def _handle_chats_list(self, message: Message):
         """Список отслеживаемых чатов."""

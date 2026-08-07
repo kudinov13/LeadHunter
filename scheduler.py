@@ -8,7 +8,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from config import SCHEDULER_TIMEZONE, FOLLOWUP_ENABLED, FOLLOWUP_HOURS_THRESHOLD, FOLLOWUP_MAX, FOLLOWUP_CHECK_INTERVAL_MIN
+from config import SCHEDULER_TIMEZONE, FOLLOWUP_ENABLED, FOLLOWUP_HOURS_THRESHOLD, FOLLOWUP_MAX, FOLLOWUP_CHECK_INTERVAL_MIN, CHAT_SEARCH_CLEANUP_DAYS
 import database as db
 import ai_engine
 
@@ -64,6 +64,17 @@ class MessageScheduler:
             )
             logger.info(f"Follow-up checker: каждые {FOLLOWUP_CHECK_INTERVAL_MIN} мин, "
                         f"порог {FOLLOWUP_HOURS_THRESHOLD}ч, макс {FOLLOWUP_MAX}")
+
+        # Ежедневная очистка старых найденных чатов (в 3:00 ночи)
+        self.scheduler.add_job(
+            self._cleanup_found_chats,
+            trigger=CronTrigger(hour=3, minute=0),
+            id="cleanup_found_chats",
+            name=f"Очистка found_chats старше {CHAT_SEARCH_CLEANUP_DAYS} дней",
+            misfire_grace_time=3600,
+            coalesce=True,
+        )
+        logger.info(f"Cleanup found_chats: ежедневно в 03:00, удаление старше {CHAT_SEARCH_CLEANUP_DAYS} дней")
 
     async def stop(self):
         self.scheduler.shutdown(wait=False)
@@ -252,6 +263,15 @@ class MessageScheduler:
                 await asyncio.sleep(5)
             except Exception as e:
                 logger.error(f"Follow-up ошибка для диалога #{dialog['id']}: {e}", exc_info=True)
+
+    async def _cleanup_found_chats(self):
+        """Ежедневная очистка найденных чатов старше CHAT_SEARCH_CLEANUP_DAYS дней."""
+        try:
+            deleted = await db.cleanup_old_found_chats(CHAT_SEARCH_CLEANUP_DAYS)
+            if deleted > 0:
+                logger.info(f"Очистка found_chats: удалено {deleted} записей старше {CHAT_SEARCH_CLEANUP_DAYS} дней")
+        except Exception as e:
+            logger.error(f"Ошибка очистки found_chats: {e}", exc_info=True)
 
     async def preview_broadcast(self, chat_id: int) -> dict | None:
         """Генерация текста рассылки БЕЗ отправки (кнопка «Тест» в GUI)."""

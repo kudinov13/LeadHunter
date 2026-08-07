@@ -31,6 +31,9 @@ from config import (
     CHAT_FOLDER_FREELANCE,
     CHAT_FOLDER_BUSINESS,
     CHAT_JOIN_DAILY_LIMIT,
+    CHAT_SEARCH_EXCLUSION_KEYWORDS,
+    CHAT_SEARCH_DAILY_LIMIT,
+    CHAT_SEARCH_BATCH_SIZE,
 )
 
 logger = logging.getLogger(__name__)
@@ -243,6 +246,83 @@ async def search_and_scan(client, keywords: list[str] = None,
     _search_status["is_running"] = False
     logger.info(f"Сканирование завершено: {len(good_chats)} бизнес-чатов из {len(chats)}")
     return good_chats
+
+
+async def search_chats_no_ai(client, keywords: list[str] = None,
+                             batch_size: int = None,
+                             exclude_already_found: bool = True) -> list[dict]:
+    """Ищет чаты по ключевым словам БЕЗ AI-проверки.
+
+    Фильтрация:
+    - по размеру (min/max members)
+    - по exclusion keywords (в названии и username)
+    - исключает уже найденные ранее чаты (из БД)
+
+    Возвращает список чатов: {id, title, username, participants_count, is_channel, is_group, search_keyword}
+    """
+    if keywords is None:
+        keywords = CHAT_SEARCH_KEYWORDS
+    if batch_size is None:
+        batch_size = CHAT_SEARCH_BATCH_SIZE
+
+    already_found = await db.get_all_found_chat_ids() if exclude_already_found else set()
+
+    found = {}
+    for kw in keywords:
+        if len(found) >= batch_size:
+            break
+        try:
+            result = await client(SearchGlobalRequest(q=kw, limit=CHAT_SEARCH_MAX_RESULTS))
+            for chat in result.chats:
+                chat_id = chat.id
+                if chat_id in found or chat_id in already_found:
+                    continue
+
+                participants = getattr(chat, "participants_count", 0) or 0
+                username = getattr(chat, "username", None)
+                if not username:
+                    continue
+
+                if participants < CHAT_SEARCH_MIN_MEMBERS:
+                    continue
+                if participants > CHAT_SEARCH_MAX_MEMBERS:
+                    continue
+
+                title = chat.title or ""
+                title_lower = title.lower()
+                username_lower = username.lower()
+
+                # Фильтр по exclusion keywords
+                is_junk = any(
+                    ex_kw in title_lower or ex_kw in username_lower
+                    for ex_kw in CHAT_SEARCH_EXCLUSION_KEYWORDS
+                )
+                if is_junk:
+                    logger.info(f"Пропуск @{username} — exclusion keyword в названии")
+                    continue
+
+                is_channel = getattr(chat, "megagroup", False) is False and getattr(chat, "broadcast", False)
+                is_group = getattr(chat, "megagroup", False)
+
+                found[chat_id] = {
+                    "id": chat_id,
+                    "title": title,
+                    "username": username,
+                    "participants_count": participants,
+                    "is_channel": is_channel,
+                    "is_group": is_group,
+                    "search_keyword": kw,
+                }
+
+                if len(found) >= batch_size:
+                    break
+
+            logger.info(f"Поиск по '{kw}': найдено {len(result.chats)} чатов, отобрано {len(found)}")
+            await asyncio.sleep(1)
+        except Exception as e:
+            logger.error(f"Ошибка поиска по '{kw}': {e}")
+
+    return list(found.values())
 
 
 async def join_and_organize_chat(client, chat: dict, folder: str = None) -> bool:

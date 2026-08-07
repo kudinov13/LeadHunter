@@ -101,6 +101,21 @@ CHAT_SEARCH_MAX_MEMBERS = int(os.getenv("CHAT_SEARCH_MAX_MEMBERS", "50000"))
 CHAT_SCAN_SAMPLE_MESSAGES = int(os.getenv("CHAT_SCAN_SAMPLE_MESSAGES", "20"))
 CHAT_JOIN_DAILY_LIMIT = int(os.getenv("CHAT_JOIN_DAILY_LIMIT", "5"))
 
+# Слова-исключения для отсеивания мусорных чатов (в названии или username)
+CHAT_SEARCH_EXCLUSION_KEYWORDS = [
+    k.strip() for k in os.getenv("CHAT_SEARCH_EXCLUSION_KEYWORDS",
+    "казино,ставки,букмекер,порно,18+,xxx,секс,наркотики,магазин аккаунтов,продажа аккаунтов,"
+    "crypto pump,pump signal,airdrop free,лишь бы не работать,заработок без вложений,"
+    "млм,сетевой маркетинг,пирамида,промокод,бонус,розыгрыш,канал,новости,музыка,фильмы,"
+    "скачать бесплатно,обзор,криптовалюта,трейдинг,форекс,инвестиции"
+    ).split(",") if k.strip()]
+# Сколько чатов искать за один день (всего)
+CHAT_SEARCH_DAILY_LIMIT = int(os.getenv("CHAT_SEARCH_DAILY_LIMIT", "20"))
+# Сколько чатов искать за один запуск (батч)
+CHAT_SEARCH_BATCH_SIZE = int(os.getenv("CHAT_SEARCH_BATCH_SIZE", "10"))
+# Через сколько дней удалять найденные чаты из БД
+CHAT_SEARCH_CLEANUP_DAYS = int(os.getenv("CHAT_SEARCH_CLEANUP_DAYS", "3"))
+
 # Папки для сортировки чатов в Telegram
 CHAT_FOLDER_FREELANCE = os.getenv("CHAT_FOLDER_FREELANCE", "Фриланс")
 CHAT_FOLDER_BUSINESS = os.getenv("CHAT_FOLDER_BUSINESS", "Бизнес")
