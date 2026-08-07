@@ -9,7 +9,8 @@ import logging
 import httpx
 from openai import AsyncOpenAI
 from config import (OMNIROUTE_API_KEY, OMNIROUTE_BASE_URL,
-                    GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3, OPENROUTER_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY,
+                    GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3, OPENROUTER_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, NVIDIA_API_KEY,
+                    BYTEPLUS_API_KEY, BYTEPLUS_ENDPOINT_ID,
                     AI_HTTP_PROXY,
                     DIALOG_AI_PROVIDER, DIALOG_MODEL,
                     CLASSIFY_AI_PROVIDER, CLASSIFY_MODEL,
@@ -39,6 +40,8 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+BYTEPLUS_BASE_URL = "https://ark.ap-southeast.bytepluses.com/api/v3"
 
 # Модели, которые поддерживают response_format json_object
 _JSON_MODELS = {
@@ -207,6 +210,22 @@ def _get_client(provider: str) -> AsyncOpenAI:
                 api_key=GEMINI_API_KEY,
                 base_url=GEMINI_BASE_URL,
             )
+        elif provider == "nvidia":
+            if not NVIDIA_API_KEY:
+                raise ValueError("NVIDIA_API_KEY не настроен. Получите бесплатно на build.nvidia.com")
+            _clients[provider] = AsyncOpenAI(
+                api_key=NVIDIA_API_KEY,
+                base_url=NVIDIA_BASE_URL,
+                max_retries=0
+            )
+        elif provider == "byteplus":
+            if not BYTEPLUS_API_KEY:
+                raise ValueError("BYTEPLUS_API_KEY не настроен. Регистрация: byteplus.com -> ModelArk")
+            _clients[provider] = AsyncOpenAI(
+                api_key=BYTEPLUS_API_KEY,
+                base_url=BYTEPLUS_BASE_URL,
+                max_retries=0
+            )
         else:
             raise ValueError(f"Неизвестный AI провайдер: {provider}")
     return _clients[provider]
@@ -267,6 +286,36 @@ async def _chat_with_fallback(
                         logger.warning(f"OpenRouter вернул пустой ответ: {response}")
                 except Exception as e_or:
                     logger.error(f"Fallback на OpenRouter тоже не сработал: {e_or}")
+            # OpenRouter тоже недоступен — пробуем NVIDIA NIM
+            if NVIDIA_API_KEY:
+                logger.warning("Пробуем fallback на NVIDIA NIM")
+                try:
+                    nv_client = _get_client("nvidia")
+                    nv_kwargs = {k: v for k, v in kwargs.items() if k != "response_format"}
+                    response = await nv_client.chat.completions.create(
+                        model="nvidia/nemotron-3-super-120b-a12b", messages=messages, **nv_kwargs
+                    )
+                    if response.choices and response.choices[0].message.content:
+                        return response.choices[0].message.content
+                    else:
+                        logger.warning(f"NVIDIA NIM вернул пустой ответ: {response}")
+                except Exception as e_nv:
+                    logger.error(f"Fallback на NVIDIA NIM тоже не сработал: {e_nv}")
+            # NVIDIA тоже недоступна — пробуем BytePlus ModelArk
+            if BYTEPLUS_API_KEY and BYTEPLUS_ENDPOINT_ID:
+                logger.warning("Пробуем fallback на BytePlus ModelArk")
+                try:
+                    bp_client = _get_client("byteplus")
+                    bp_kwargs = {k: v for k, v in kwargs.items() if k != "response_format"}
+                    response = await bp_client.chat.completions.create(
+                        model=BYTEPLUS_ENDPOINT_ID, messages=messages, **bp_kwargs
+                    )
+                    if response.choices and response.choices[0].message.content:
+                        return response.choices[0].message.content
+                    else:
+                        logger.warning(f"BytePlus вернул пустой ответ: {response}")
+                except Exception as e_bp:
+                    logger.error(f"Fallback на BytePlus тоже не сработал: {e_bp}")
             raise
         try:
             response = await client.chat.completions.create(

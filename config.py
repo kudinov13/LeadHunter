@@ -55,6 +55,12 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 # Google Gemini — БЕСПЛАТНО, 1500 запросов/день, 1M токенов/мин. Регистрация: ai.google.dev
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+# NVIDIA NIM — БЕСПЛАТНО, 1000 кредитов при регистрации, 40 запросов/мин. Регистрация: build.nvidia.com
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
+# BytePlus ModelArk — есть бесплатный тир. Регистрация: byteplus.com -> ModelArk
+# Требует создания inference endpoint в консоли -> BYTEPLUS_ENDPOINT_ID (вида ep-xxxxxxxxxxxxxxxx-xxxxx)
+BYTEPLUS_API_KEY = os.getenv("BYTEPLUS_API_KEY", "")
+BYTEPLUS_ENDPOINT_ID = os.getenv("BYTEPLUS_ENDPOINT_ID", "")
 
 # Модели для диалогов (по умолчанию OmniRoute — бесплатно, лучшие модели)
 # OmniRoute: "auto/claude-sonnet" (гарантированно Claude Sonnet + fallback),
