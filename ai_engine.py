@@ -264,19 +264,19 @@ async def _chat_with_fallback(
             return response.choices[0].message.content
         except Exception as e2:
             logger.error(f"Fallback auto тоже не сработал: {e2}")
-            # Пробуем Gemini как бесплатный fallback без лимитов
-            if provider != "gemini" and GEMINI_API_KEY:
-                logger.warning("Пробуем fallback на Google Gemini")
+            # Пробуем OpenRouter (бесплатные модели) как fallback
+            if provider != "openrouter" and OPENROUTER_API_KEY:
+                logger.warning("Пробуем fallback на OpenRouter (бесплатная модель)")
                 try:
-                    gemini_client = _get_client("gemini")
-                    gemini_kwargs = {k: v for k, v in kwargs.items() if k != "response_format"}
-                    response = await gemini_client.chat.completions.create(
-                        model="gemini-2.0-flash", messages=messages, **gemini_kwargs
+                    or_client = _get_client("openrouter")
+                    or_kwargs = {k: v for k, v in kwargs.items() if k != "response_format"}
+                    response = await or_client.chat.completions.create(
+                        model="nvidia/nemotron-3-super-120b-a12b:free", messages=messages, **or_kwargs
                     )
                     if response.choices:
                         return response.choices[0].message.content
-                except Exception as e_gem:
-                    logger.error(f"Fallback на Gemini тоже не сработал: {e_gem}")
+                except Exception as e_or:
+                    logger.error(f"Fallback на OpenRouter тоже не сработал: {e_or}")
             # Последний рубеж: Groq
             if provider != "groq" and _GROQ_KEYS:
                 logger.warning("Пробуем кросс-провайдерный fallback на Groq")
