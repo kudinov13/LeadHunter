@@ -276,12 +276,14 @@ async def search_chats_no_ai(client, keywords: list[str] = None,
         batch_size = CHAT_SEARCH_BATCH_SIZE
 
     already_found = await db.get_all_found_chat_ids() if exclude_already_found else set()
+    logger.info(f"search_chats_no_ai: started, keywords={keywords}, batch_size={batch_size}, already_found={len(already_found)}")
 
     found = {}
     for kw in keywords:
         if len(found) >= batch_size:
             break
         try:
+            logger.info(f"search_chats_no_ai: searching for '{kw}'...")
             result = await client(SearchGlobalRequest(
                 q=kw,
                 filter=InputMessagesFilterEmpty(),
@@ -292,6 +294,7 @@ async def search_chats_no_ai(client, keywords: list[str] = None,
                 offset_id=0,
                 limit=CHAT_SEARCH_MAX_RESULTS,
             ))
+            logger.info(f"search_chats_no_ai: '{kw}' -> raw chats: {len(result.chats)}")
             for chat in result.chats:
                 chat_id = chat.id
                 if chat_id in found or chat_id in already_found:
@@ -299,15 +302,19 @@ async def search_chats_no_ai(client, keywords: list[str] = None,
 
                 participants = getattr(chat, "participants_count", 0) or 0
                 username = getattr(chat, "username", None)
+                title = chat.title or ""
+                logger.info(f"  chat: {title} @{username} members={participants} id={chat_id}")
                 if not username:
+                    logger.info(f"    skip: no username")
                     continue
 
                 if participants < CHAT_SEARCH_MIN_MEMBERS:
+                    logger.info(f"    skip: too few members ({participants} < {CHAT_SEARCH_MIN_MEMBERS})")
                     continue
                 if participants > CHAT_SEARCH_MAX_MEMBERS:
+                    logger.info(f"    skip: too many members ({participants} > {CHAT_SEARCH_MAX_MEMBERS})")
                     continue
 
-                title = chat.title or ""
                 title_lower = title.lower()
                 username_lower = username.lower()
 
@@ -317,7 +324,7 @@ async def search_chats_no_ai(client, keywords: list[str] = None,
                     for ex_kw in CHAT_SEARCH_EXCLUSION_KEYWORDS
                 )
                 if is_junk:
-                    logger.info(f"Пропуск @{username} — exclusion keyword в названии")
+                    logger.info(f"    skip: exclusion keyword")
                     continue
 
                 is_channel = getattr(chat, "megagroup", False) is False and getattr(chat, "broadcast", False)
@@ -332,6 +339,7 @@ async def search_chats_no_ai(client, keywords: list[str] = None,
                     "is_group": is_group,
                     "search_keyword": kw,
                 }
+                logger.info(f"    ✅ ADDED")
 
                 if len(found) >= batch_size:
                     break
