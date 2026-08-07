@@ -93,9 +93,12 @@ SCHEDULER_TIMEZONE = os.getenv("SCHEDULER_TIMEZONE", "Asia/Novosibirsk")
 # === Auto Chat Discovery ===
 CHAT_SEARCH_KEYWORDS = [
     k.strip() for k in os.getenv("CHAT_SEARCH_KEYWORDS",
-    "фриланс,ищу разработчика,IT заказы,разработка под ключ,ищу программиста,заказ на разработку,веб разработка"
+    "фриланс,ищу разработчика,IT заказы,разработка под ключ,ищу программиста,заказ на разработку,веб разработка,"
+    "заказ на сайт,разработка сайта,создание сайта,разработка бота,telegram бот разработка,"
+    "ищу исполнителя,нужен разработчик,заказ приложения,mobile разработка,"
+    "backend разработка,frontend разработка,python разработчик"
     ).split(",") if k.strip()]
-CHAT_SEARCH_MAX_RESULTS = int(os.getenv("CHAT_SEARCH_MAX_RESULTS", "20"))
+CHAT_SEARCH_MAX_RESULTS = int(os.getenv("CHAT_SEARCH_MAX_RESULTS", "100"))
 CHAT_SEARCH_MIN_MEMBERS = int(os.getenv("CHAT_SEARCH_MIN_MEMBERS", "100"))
 CHAT_SEARCH_MAX_MEMBERS = int(os.getenv("CHAT_SEARCH_MAX_MEMBERS", "50000"))
 CHAT_SCAN_SAMPLE_MESSAGES = int(os.getenv("CHAT_SCAN_SAMPLE_MESSAGES", "20"))

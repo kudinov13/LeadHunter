@@ -7,6 +7,7 @@
 import logging
 import asyncio
 from telethon.tl.functions.messages import SearchGlobalRequest
+from telethon.tl.functions.contacts import SearchRequest as ContactsSearchRequest
 from telethon.tl.functions.channels import JoinChannelRequest, GetFullChannelRequest
 from telethon.tl.functions.messages import ReadMentionsRequest
 from telethon.tl.functions.account import UpdateNotifySettingsRequest
@@ -293,33 +294,52 @@ async def search_chats_no_ai(client, keywords: list[str] = None,
         if len(found) >= batch_size:
             break
         try:
-            logger.info(f"search_chats_no_ai: searching for '{kw}'...")
-            result = await client(SearchGlobalRequest(
-                q=kw,
-                filter=InputMessagesFilterEmpty(),
-                min_date=0,
-                max_date=0,
-                offset_rate=0,
-                offset_peer=InputPeerEmpty(),
-                offset_id=0,
-                limit=CHAT_SEARCH_MAX_RESULTS,
-            ))
-            logger.info(f"search_chats_no_ai: '{kw}' -> raw chats: {len(result.chats)}")
-            for chat in result.chats:
+            # 1. ContactsSearchRequest — ищет каналы/группы по названию
+            logger.info(f"search_chats_no_ai: contacts.search for '{kw}'...")
+            try:
+                contacts_result = await client(ContactsSearchRequest(q=kw, limit=100))
+                all_chats = list(contacts_result.chats)
+                logger.info(f"search_chats_no_ai: contacts.search '{kw}' -> {len(all_chats)} chats")
+            except Exception as e:
+                logger.warning(f"search_chats_no_ai: contacts.search failed: {e}")
+                all_chats = []
+
+            # 2. SearchGlobalRequest — дополнительный поиск по сообщениям
+            logger.info(f"search_chats_no_ai: searchGlobal for '{kw}'...")
+            try:
+                global_result = await client(SearchGlobalRequest(
+                    q=kw,
+                    filter=InputMessagesFilterEmpty(),
+                    min_date=0,
+                    max_date=0,
+                    offset_rate=0,
+                    offset_peer=InputPeerEmpty(),
+                    offset_id=0,
+                    limit=CHAT_SEARCH_MAX_RESULTS,
+                ))
+                # Добавляем только новые чаты
+                existing_ids = {c.id for c in all_chats}
+                for c in global_result.chats:
+                    if c.id not in existing_ids:
+                        all_chats.append(c)
+                logger.info(f"search_chats_no_ai: searchGlobal '{kw}' -> +{len(global_result.chats)} chats (total: {len(all_chats)})")
+            except Exception as e:
+                logger.warning(f"search_chats_no_ai: searchGlobal failed: {e}")
+
+            logger.info(f"search_chats_no_ai: '{kw}' -> total raw chats: {len(all_chats)}")
+
+            for chat in all_chats:
                 chat_id = chat.id
                 if chat_id in found or chat_id in already_found:
                     continue
 
                 # Исключаем чаты, в которых пользователь уже состоит
                 if chat_id in my_dialog_ids:
-                    logger.info(f"  chat: {chat.title} @{getattr(chat, 'username', None)} id={chat_id} — skip: already member")
                     continue
 
                 username = getattr(chat, "username", None)
                 title = chat.title or ""
-                logger.info(f"  chat: {title} @{username} id={chat_id}")
                 if not username:
-                    logger.info(f"    skip: no username")
                     continue
 
                 title_lower = title.lower()
@@ -331,30 +351,26 @@ async def search_chats_no_ai(client, keywords: list[str] = None,
                     for ex_kw in CHAT_SEARCH_EXCLUSION_KEYWORDS
                 )
                 if is_junk:
-                    logger.info(f"    skip: exclusion keyword")
                     continue
 
-                # SearchGlobalRequest возвращает participants_count=0,
-                # нужно получить полный entity через GetFullChannelRequest
-                try:
-                    full = await client(GetFullChannelRequest(channel=chat_id))
-                    participants = full.full_chat.participants_count or 0
-                except Exception as e:
-                    logger.warning(f"    GetFullChannelRequest failed: {e}, trying get_entity")
+                # Получаем реальное количество участников
+                participants = getattr(chat, "participants_count", 0) or 0
+                if participants == 0:
                     try:
-                        entity = await client.get_entity(username)
-                        participants = getattr(entity, "participants_count", 0) or 0
-                    except Exception as e2:
-                        logger.warning(f"    get_entity also failed: {e2}")
-                        participants = 0
+                        full = await client(GetFullChannelRequest(channel=chat_id))
+                        participants = full.full_chat.participants_count or 0
+                    except Exception:
+                        try:
+                            entity = await client.get_entity(username)
+                            participants = getattr(entity, "participants_count", 0) or 0
+                        except Exception:
+                            participants = 0
 
-                logger.info(f"    members={participants}")
+                logger.info(f"  chat: {title} @{username} members={participants}")
 
                 if participants < CHAT_SEARCH_MIN_MEMBERS:
-                    logger.info(f"    skip: too few members ({participants} < {CHAT_SEARCH_MIN_MEMBERS})")
                     continue
                 if participants > CHAT_SEARCH_MAX_MEMBERS:
-                    logger.info(f"    skip: too many members ({participants} > {CHAT_SEARCH_MAX_MEMBERS})")
                     continue
 
                 is_channel = getattr(chat, "megagroup", False) is False and getattr(chat, "broadcast", False)
@@ -374,7 +390,7 @@ async def search_chats_no_ai(client, keywords: list[str] = None,
                 if len(found) >= batch_size:
                     break
 
-            logger.info(f"Поиск по '{kw}': найдено {len(result.chats)} чатов, отобрано {len(found)}")
+            logger.info(f"Поиск по '{kw}': отобрано {len(found)}")
             await asyncio.sleep(1)
         except Exception as e:
             logger.error(f"Ошибка поиска по '{kw}': {e}")
