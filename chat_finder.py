@@ -7,7 +7,7 @@
 import logging
 import asyncio
 from telethon.tl.functions.messages import SearchGlobalRequest
-from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.channels import JoinChannelRequest, GetFullChannelRequest
 from telethon.tl.functions.messages import ReadMentionsRequest
 from telethon.tl.functions.account import UpdateNotifySettingsRequest
 from telethon.tl.types import (
@@ -300,19 +300,11 @@ async def search_chats_no_ai(client, keywords: list[str] = None,
                 if chat_id in found or chat_id in already_found:
                     continue
 
-                participants = getattr(chat, "participants_count", 0) or 0
                 username = getattr(chat, "username", None)
                 title = chat.title or ""
-                logger.info(f"  chat: {title} @{username} members={participants} id={chat_id}")
+                logger.info(f"  chat: {title} @{username} id={chat_id}")
                 if not username:
                     logger.info(f"    skip: no username")
-                    continue
-
-                if participants < CHAT_SEARCH_MIN_MEMBERS:
-                    logger.info(f"    skip: too few members ({participants} < {CHAT_SEARCH_MIN_MEMBERS})")
-                    continue
-                if participants > CHAT_SEARCH_MAX_MEMBERS:
-                    logger.info(f"    skip: too many members ({participants} > {CHAT_SEARCH_MAX_MEMBERS})")
                     continue
 
                 title_lower = title.lower()
@@ -325,6 +317,29 @@ async def search_chats_no_ai(client, keywords: list[str] = None,
                 )
                 if is_junk:
                     logger.info(f"    skip: exclusion keyword")
+                    continue
+
+                # SearchGlobalRequest возвращает participants_count=0,
+                # нужно получить полный entity через GetFullChannelRequest
+                try:
+                    full = await client(GetFullChannelRequest(channel=chat_id))
+                    participants = full.full_chat.participants_count or 0
+                except Exception as e:
+                    logger.warning(f"    GetFullChannelRequest failed: {e}, trying get_entity")
+                    try:
+                        entity = await client.get_entity(username)
+                        participants = getattr(entity, "participants_count", 0) or 0
+                    except Exception as e2:
+                        logger.warning(f"    get_entity also failed: {e2}")
+                        participants = 0
+
+                logger.info(f"    members={participants}")
+
+                if participants < CHAT_SEARCH_MIN_MEMBERS:
+                    logger.info(f"    skip: too few members ({participants} < {CHAT_SEARCH_MIN_MEMBERS})")
+                    continue
+                if participants > CHAT_SEARCH_MAX_MEMBERS:
+                    logger.info(f"    skip: too many members ({participants} > {CHAT_SEARCH_MAX_MEMBERS})")
                     continue
 
                 is_channel = getattr(chat, "megagroup", False) is False and getattr(chat, "broadcast", False)
