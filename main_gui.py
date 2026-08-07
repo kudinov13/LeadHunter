@@ -165,10 +165,13 @@ class App:
 
         self.read_var = tk.BooleanVar()
         self.bcast_var = tk.BooleanVar()
+        self.direct_var = tk.BooleanVar()
         ttk.Checkbutton(right, text="Читать (поиск лидов в этом чате)",
                         variable=self.read_var).pack(anchor=tk.W)
         ttk.Checkbutton(right, text="Рассылка (AI пишет рекламу в этот чат)",
                         variable=self.bcast_var).pack(anchor=tk.W, pady=(2, 4))
+        ttk.Checkbutton(right, text="Прямая реклама (без правил — открыто предлагаю услуги)",
+                        variable=self.direct_var).pack(anchor=tk.W, pady=(2, 4))
 
         # Пол разработчика — общая настройка, хранится на сервере
         self.gender_var = tk.StringVar(value="male")
@@ -397,6 +400,7 @@ class App:
         self.chat_title_var.set(chat.get("chat_name") or str(chat_id))
         self.read_var.set(bool(chat.get("is_monitored")))
         self.bcast_var.set(bool(chat.get("is_broadcast")))
+        self.direct_var.set(bool(chat.get("is_direct_promo")))
 
         rules = chat.get("chat_rules") or ""
         self.no_rules_var.set(rules == NO_RULES_MARKER)
@@ -430,6 +434,7 @@ class App:
             rules = self.rules_text.get("1.0", tk.END).strip()
 
         times = self.times_var.get().strip()
+        is_direct = self.direct_var.get()
         if self.bcast_var.get():
             if not times:
                 messagebox.showwarning(
@@ -445,11 +450,12 @@ class App:
                     "Пример: 10:00, 19:30"
                 )
                 return
-            if not rules:
+            if not is_direct and not rules:
                 messagebox.showwarning(
                     "Нет правил чата",
                     "Включена рассылка, но правила чата не заполнены.\n"
                     "Вставьте правила чата или отметьте «Правил нет».\n"
+                    "Или включите «Прямая реклама» — тогда правила не нужны.\n"
                     "Без этого рассылка отправляться НЕ будет (защита от бана)."
                 )
                 return
@@ -461,6 +467,7 @@ class App:
             "is_broadcast": self.bcast_var.get(),
             "chat_rules": rules,
             "broadcast_times": times,
+            "is_direct_promo": is_direct,
         }
 
         self.status_var.set("💾 Сохранение на сервере...")

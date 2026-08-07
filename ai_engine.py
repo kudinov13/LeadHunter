@@ -18,7 +18,7 @@ from config import (OMNIROUTE_API_KEY, OMNIROUTE_BASE_URL,
                     BROADCAST_AI_PROVIDER, BROADCAST_MODEL,
                     CLASSIFY_SYSTEM_PROMPT, DIALOG_SYSTEM_PROMPT,
                     COLD_CLASSIFY_PROMPT,
-                    BROADCAST_PROMPT, NO_RULES_MARKER,
+                    BROADCAST_PROMPT, NO_RULES_MARKER, DIRECT_PROMPT,
                     DEVELOPER_INFO, DEVELOPER_GENDER)
 
 logger = logging.getLogger(__name__)
@@ -507,25 +507,34 @@ def _has_foreign_script(text: str) -> bool:
 
 
 async def generate_broadcast(chat_rules: str, recent_messages: list[str],
-                             now_str: str) -> dict | None:
+                             now_str: str, is_direct_promo: bool = False) -> dict | None:
     """Генерация рекламной рассылки с учётом правил чата.
 
+    Если is_direct_promo=True — используется прямой промпт (для чатов без правил).
     Возвращает {"skip": bool, "reason": str, "message": str} или None при ошибке.
     """
     try:
-        rules_text = chat_rules.strip()
-        if rules_text == NO_RULES_MARKER:
-            rules_text = "Правил в чате нет (владелец подтвердил). Пиши в нейтральном деловом тоне."
-
         recent_text = "\n---\n".join(recent_messages) if recent_messages else "(ещё не было отправок)"
 
-        prompt = BROADCAST_PROMPT.format(
-            gender=await _get_gender_ru(),
-            developer_info=DEVELOPER_INFO,
-            chat_rules=rules_text,
-            recent_messages=recent_text,
-            current_datetime=now_str,
-        )
+        if is_direct_promo:
+            prompt = DIRECT_PROMPT.format(
+                gender=await _get_gender_ru(),
+                developer_info=DEVELOPER_INFO,
+                recent_messages=recent_text,
+                current_datetime=now_str,
+            )
+        else:
+            rules_text = chat_rules.strip()
+            if rules_text == NO_RULES_MARKER:
+                rules_text = "Правил в чате нет (владелец подтвердил). Пиши в нейтральном деловом тоне."
+
+            prompt = BROADCAST_PROMPT.format(
+                gender=await _get_gender_ru(),
+                developer_info=DEVELOPER_INFO,
+                chat_rules=rules_text,
+                recent_messages=recent_text,
+                current_datetime=now_str,
+            )
 
         messages = [{"role": "user", "content": prompt}]
 
