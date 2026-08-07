@@ -15,6 +15,7 @@ from telethon.tl.types import (
     DialogFilter,
     InputPeerEmpty,
     InputFolderPeer,
+    InputMessagesFilterEmpty,
 )
 from telethon.tl.functions.folders import EditPeerFoldersRequest
 from telethon.tl.functions.messages import GetDialogFiltersRequest, UpdateDialogFilterRequest
@@ -87,7 +88,16 @@ async def search_chats(client, keywords: list[str] = None, max_results: int = No
     found = {}
     for kw in keywords:
         try:
-            result = await client(SearchGlobalRequest(q=kw, limit=max_results))
+            result = await client(SearchGlobalRequest(
+                q=kw,
+                filter=InputMessagesFilterEmpty(),
+                min_date=0,
+                max_date=0,
+                offset_rate=0,
+                offset_peer=InputPeerEmpty(),
+                offset_id=0,
+                limit=max_results,
+            ))
             for chat in result.chats:
                 chat_id = chat.id
                 if chat_id in found:
@@ -272,7 +282,16 @@ async def search_chats_no_ai(client, keywords: list[str] = None,
         if len(found) >= batch_size:
             break
         try:
-            result = await client(SearchGlobalRequest(q=kw, limit=CHAT_SEARCH_MAX_RESULTS))
+            result = await client(SearchGlobalRequest(
+                q=kw,
+                filter=InputMessagesFilterEmpty(),
+                min_date=0,
+                max_date=0,
+                offset_rate=0,
+                offset_peer=InputPeerEmpty(),
+                offset_id=0,
+                limit=CHAT_SEARCH_MAX_RESULTS,
+            ))
             for chat in result.chats:
                 chat_id = chat.id
                 if chat_id in found or chat_id in already_found:
