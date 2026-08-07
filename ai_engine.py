@@ -234,7 +234,8 @@ async def _chat_with_fallback(
                     response = await new_client.chat.completions.create(
                         model=model, messages=messages, **kwargs
                     )
-                    return response.choices[0].message.content
+                    if response.choices and response.choices[0].message.content:
+                        return response.choices[0].message.content
                 except Exception as e_rot:
                     logger.warning(f"Второй ключ тоже не сработал: {e_rot}")
             # Пробуем резервную модель на текущем ключе
@@ -242,7 +243,8 @@ async def _chat_with_fallback(
                 response = await client.chat.completions.create(
                     model=_GROQ_FALLBACK_MODEL, messages=messages, **kwargs
                 )
-                return response.choices[0].message.content
+                if response.choices and response.choices[0].message.content:
+                    return response.choices[0].message.content
             except Exception as e2:
                 # Если есть второй ключ — пробуем резервную модель с ним
                 if len(_GROQ_KEYS) > 1 and _groq_key_idx == 0:
@@ -252,7 +254,8 @@ async def _chat_with_fallback(
                         response = await new_client.chat.completions.create(
                             model=_GROQ_FALLBACK_MODEL, messages=messages, **kwargs
                         )
-                        return response.choices[0].message.content
+                        if response.choices and response.choices[0].message.content:
+                            return response.choices[0].message.content
                     except Exception as e3:
                         logger.error(f"Резервная модель + второй ключ не сработали: {e3}")
                 logger.error(f"Резервная модель Groq тоже не сработала: {e2}")
@@ -265,8 +268,10 @@ async def _chat_with_fallback(
                         response = await or_client.chat.completions.create(
                             model="nvidia/nemotron-3-super-120b-a12b:free", messages=messages, **or_kwargs
                         )
-                        if response.choices:
+                        if response.choices and response.choices[0].message.content:
                             return response.choices[0].message.content
+                        else:
+                            logger.warning(f"OpenRouter вернул пустой ответ: {response}")
                     except Exception as e_or:
                         logger.error(f"Fallback на OpenRouter тоже не сработал: {e_or}")
                 raise
