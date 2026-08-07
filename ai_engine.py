@@ -60,7 +60,8 @@ def _get_groq_client() -> AsyncOpenAI:
     return AsyncOpenAI(
         api_key=key,
         base_url=GROQ_BASE_URL,
-        http_client=_proxied_http_client()
+        http_client=_proxied_http_client(),
+        max_retries=0
     )
 
 
@@ -146,7 +147,8 @@ def _get_client(provider: str) -> AsyncOpenAI:
         if provider == "omniroute":
             _clients[provider] = AsyncOpenAI(
                 api_key=OMNIROUTE_API_KEY,
-                base_url=OMNIROUTE_BASE_URL
+                base_url=OMNIROUTE_BASE_URL,
+                max_retries=0
             )
         elif provider == "groq":
             if not _GROQ_KEYS:
@@ -158,7 +160,8 @@ def _get_client(provider: str) -> AsyncOpenAI:
             _clients[provider] = AsyncOpenAI(
                 api_key=OPENROUTER_API_KEY,
                 base_url=OPENROUTER_BASE_URL,
-                http_client=_proxied_http_client()
+                http_client=_proxied_http_client(),
+                max_retries=0
             )
         elif provider == "openai":
             if not OPENAI_API_KEY:
