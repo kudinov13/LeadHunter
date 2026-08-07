@@ -14,8 +14,9 @@ from telethon.tl.types import (
     InputPeerNotifySettings,
     DialogFilter,
     InputPeerEmpty,
+    InputFolderPeer,
 )
-from telethon.tl.functions.folders import ArchiveChatsRequest
+from telethon.tl.functions.folders import EditPeerFoldersRequest
 from telethon.tl.functions.messages import GetDialogFiltersRequest, UpdateDialogFilterRequest
 from telethon import utils
 
@@ -280,7 +281,9 @@ async def join_and_organize_chat(client, chat: dict, folder: str = None) -> bool
 
         # 3. Архивируем
         peer = await client.get_input_entity(entity)
-        await client(ArchiveChatsRequest(peers=[peer]))
+        await client(EditPeerFoldersRequest(
+            folder_peers=[InputFolderPeer(peer=peer, folder_id=1)]
+        ))
         logger.info(f"Чат @{username} отправлен в архив")
 
         # 4. Добавляем в папку
